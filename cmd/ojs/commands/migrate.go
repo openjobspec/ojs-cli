@@ -35,14 +35,17 @@ func migrateAnalyze(args []string) error {
 	}
 
 	sourceName := args[0]
-	fs := flag.NewFlagSet("migrate analyze", flag.ExitOnError)
+	fs := flag.NewFlagSet("migrate analyze", flag.ContinueOnError)
 	redisURL := fs.String("redis", "redis://localhost:6379", "Redis connection URL")
-	fs.Parse(args[1:])
+	if err := fs.Parse(args[1:]); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	src, err := newSource(sourceName, *redisURL)
 	if err != nil {
 		return err
 	}
+	defer src.Close()
 
 	result, err := src.Analyze()
 	if err != nil {
@@ -81,15 +84,18 @@ func migrateExport(args []string) error {
 	}
 
 	sourceName := args[0]
-	fs := flag.NewFlagSet("migrate export", flag.ExitOnError)
+	fs := flag.NewFlagSet("migrate export", flag.ContinueOnError)
 	redisURL := fs.String("redis", "redis://localhost:6379", "Redis connection URL")
 	outputFile := fs.String("output", "jobs.ndjson", "Output NDJSON file")
-	fs.Parse(args[1:])
+	if err := fs.Parse(args[1:]); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	src, err := newSource(sourceName, *redisURL)
 	if err != nil {
 		return err
 	}
+	defer src.Close()
 
 	jobs, err := src.Export()
 	if err != nil {
@@ -114,9 +120,11 @@ func migrateExport(args []string) error {
 }
 
 func migrateImport(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("migrate import", flag.ExitOnError)
+	fs := flag.NewFlagSet("migrate import", flag.ContinueOnError)
 	file := fs.String("file", "", "NDJSON file to import (required)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	if *file == "" {
 		return fmt.Errorf("--file is required\n\nUsage: ojs migrate import --file <file>")

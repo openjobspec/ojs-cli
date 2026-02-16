@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/net/context"
@@ -29,6 +30,11 @@ func NewCelerySource(redisURL string) (*CelerySource, error) {
 	}, nil
 }
 
+// Close releases the underlying Redis connection.
+func (c *CelerySource) Close() error {
+	return c.rdb.Close()
+}
+
 type celeryMessage struct {
 	Body    string         `json:"body"`
 	Headers celeryHeaders  `json:"headers"`
@@ -40,7 +46,8 @@ type celeryHeaders struct {
 }
 
 func (c *CelerySource) Analyze() (*AnalysisResult, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	result := &AnalysisResult{
 		Source:     "celery",
@@ -124,7 +131,8 @@ func (c *CelerySource) analyzeQueue(ctx context.Context, name string) (*QueueAna
 }
 
 func (c *CelerySource) Export() ([]ExportedJob, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	discoveredQueues := c.discoverQueues(ctx)
 	if len(discoveredQueues) == 0 {

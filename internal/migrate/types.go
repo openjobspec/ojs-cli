@@ -32,4 +32,5 @@ type ExportedJob struct {
 type Source interface {
 	Analyze() (*AnalysisResult, error)
 	Export() ([]ExportedJob, error)
+	Close() error
 }

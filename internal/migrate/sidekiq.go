@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/net/context"
@@ -24,6 +25,11 @@ func NewSidekiqSource(redisURL string) (*SidekiqSource, error) {
 	return &SidekiqSource{rdb: redis.NewClient(opts), url: redisURL}, nil
 }
 
+// Close releases the underlying Redis connection.
+func (s *SidekiqSource) Close() error {
+	return s.rdb.Close()
+}
+
 type sidekiqJob struct {
 	Class      string          `json:"class"`
 	Args       json.RawMessage `json:"args"`
@@ -35,7 +41,8 @@ type sidekiqJob struct {
 }
 
 func (s *SidekiqSource) Analyze() (*AnalysisResult, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	queues, err := s.rdb.SMembers(ctx, "queues").Result()
 	if err != nil {
@@ -91,7 +98,8 @@ func (s *SidekiqSource) analyzeQueue(ctx context.Context, name string) (*QueueAn
 }
 
 func (s *SidekiqSource) Export() ([]ExportedJob, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	queues, err := s.rdb.SMembers(ctx, "queues").Result()
 	if err != nil {

@@ -25,6 +25,11 @@ func NewBullMQSource(redisURL string) (*BullMQSource, error) {
 	return &BullMQSource{rdb: redis.NewClient(opts), url: redisURL}, nil
 }
 
+// Close releases the underlying Redis connection.
+func (b *BullMQSource) Close() error {
+	return b.rdb.Close()
+}
+
 type bullMQJobData struct {
 	Name string          `json:"name"`
 	Data json.RawMessage `json:"data"`
@@ -37,7 +42,8 @@ type bullMQOpts struct {
 }
 
 func (b *BullMQSource) Analyze() (*AnalysisResult, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	queueNames, err := b.discoverQueues(ctx)
 	if err != nil {
@@ -146,7 +152,8 @@ func (b *BullMQSource) analyzeQueue(ctx context.Context, name string) (*QueueAna
 }
 
 func (b *BullMQSource) Export() ([]ExportedJob, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	queueNames, err := b.discoverQueues(ctx)
 	if err != nil {
