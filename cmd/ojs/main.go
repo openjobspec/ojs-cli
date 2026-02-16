@@ -76,6 +76,30 @@ func main() {
 		err = commands.Migrate(c, args[1:])
 	case "completion":
 		err = commands.Completion(args[1:])
+	case "jobs":
+		err = commands.Jobs(c, args[1:])
+	case "result":
+		err = commands.Result(c, args[1:])
+	case "bulk":
+		err = commands.Bulk(c, args[1:])
+	case "priority":
+		err = commands.Priority(c, args[1:])
+	case "retries":
+		err = commands.Retries(c, args[1:])
+	case "metrics":
+		err = commands.Metrics(c, args[1:])
+	case "rate-limits":
+		err = commands.RateLimits(c, args[1:])
+	case "events":
+		err = commands.Events(cfg, args[1:])
+	case "system":
+		err = commands.System(c, args[1:])
+	case "webhooks":
+		err = commands.Webhooks(c, args[1:])
+	case "stats":
+		err = commands.Stats(c, args[1:])
+	case "retry":
+		err = commands.Retry(c, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
 		printUsage()
@@ -94,17 +118,33 @@ func printUsage() {
 Usage:
   ojs <command> [flags]
 
-Commands:
-  enqueue      Enqueue a new job
-  status       Get job status
+Job Commands:
+  enqueue      Enqueue a new job (supports --batch for bulk)
+  status       Get job status (includes progress, --detail for full envelope)
   cancel       Cancel a job
-  health       Check server health
-  queues       List and manage queues
-  workers      List active workers
-  dead-letter  Manage dead letter queue
-  cron         Manage cron jobs
-  monitor      Live monitoring dashboard
+  retry        Retry a job
+  result       Get job result
+  jobs         List and search jobs
+  priority     Update job priority
+  retries      View job retry history
+  bulk         Bulk cancel/retry/delete operations
+
+Queue & Server Commands:
+  queues       List, create, delete, purge, configure, pause/resume queues
+  workers      List, detail, quiet, deregister workers
+  dead-letter  Manage dead letter queue (list, retry, purge, stats)
+  cron         Manage cron jobs (register, trigger, pause, history, detail, update)
   workflow     Manage workflows
+  webhooks     Manage webhook subscriptions
+  rate-limits  Inspect and override rate limits
+  events       Stream server-sent events
+  metrics      View server metrics
+  stats        Aggregate system statistics
+  system       System maintenance mode and config
+  health       Check server health
+  monitor      Live monitoring dashboard
+
+Utility Commands:
   migrate      Migrate jobs from other systems
   completion   Generate shell completions
 

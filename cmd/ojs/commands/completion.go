@@ -26,17 +26,30 @@ func Completion(args []string) error {
 }
 
 var commands = map[string][]string{
-	"enqueue":     {"--type", "--queue", "--priority", "--args", "--meta", "--max-attempts"},
-	"status":      {},
+	"enqueue":     {"--type", "--queue", "--priority", "--args", "--meta", "--max-attempts", "--unique-key", "--unique-within", "--batch"},
+	"status":      {"--detail"},
 	"cancel":      {},
 	"health":      {},
-	"queues":      {"--stats", "--pause", "--resume"},
-	"workers":     {"--quiet", "--resume"},
-	"dead-letter": {"--retry", "--delete", "--limit"},
-	"cron":        {"--register", "--delete", "--name", "--expression", "--type", "--queue"},
+	"queues":      {"--stats", "--pause", "--resume", "--create", "--delete", "--purge", "--config", "--concurrency", "--max-size", "--states", "--retention"},
+	"workers":     {"--quiet", "--resume", "--detail", "--quiet-worker", "--deregister"},
+	"dead-letter": {"--retry", "--delete", "--limit", "--purge", "--stats", "--older-than"},
+	"cron":        {"--register", "--delete", "--name", "--expression", "--type", "--queue", "--trigger", "--history", "--history-limit", "--pause", "--resume", "--detail", "--update", "--enabled"},
 	"monitor":     {"--interval"},
 	"workflow":    {},
+	"migrate":     {},
 	"completion":  {},
+	"jobs":        {"--state", "--queue", "--type", "--limit"},
+	"result":      {"--wait", "--timeout"},
+	"bulk":        {},
+	"priority":    {"--set"},
+	"retries":     {},
+	"retry":       {},
+	"metrics":     {"--format"},
+	"rate-limits": {"--inspect", "--override", "--concurrency", "--clear"},
+	"events":      {"--follow", "--types", "--queue"},
+	"system":      {},
+	"webhooks":    {},
+	"stats":       {"--history", "--period", "--since", "--queue"},
 }
 
 var workflowSubcommands = map[string][]string{
@@ -44,6 +57,26 @@ var workflowSubcommands = map[string][]string{
 	"status": {},
 	"cancel": {},
 	"list":   {"--limit", "--state"},
+}
+
+var bulkSubcommands = map[string][]string{
+	"cancel": {"--ids", "--state", "--queue"},
+	"retry":  {"--ids", "--state", "--queue"},
+	"delete": {"--ids", "--state", "--queue", "--older-than"},
+}
+
+var systemSubcommands = map[string][]string{
+	"maintenance": {"--enable", "--disable", "--reason"},
+	"config":      {},
+}
+
+var webhooksSubcommands = map[string][]string{
+	"create":        {"--url", "--events", "--secret"},
+	"list":          {"--limit"},
+	"get":           {},
+	"delete":        {},
+	"test":          {},
+	"rotate-secret": {},
 }
 
 var globalFlags = []string{"--url", "--json", "--version", "--help"}
@@ -55,6 +88,27 @@ func commandNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func generateSubcommandCompletion(subcmds map[string][]string) string {
+	var b strings.Builder
+	subNames := make([]string, 0, len(subcmds))
+	for k := range subcmds {
+		subNames = append(subNames, k)
+	}
+	sort.Strings(subNames)
+	b.WriteString(fmt.Sprintf(`            if [ ${COMP_CWORD} -eq 2 ]; then
+                COMPREPLY=($(compgen -W "%s" -- "${cur}"))
+            else
+                case "${COMP_WORDS[2]}" in
+`, strings.Join(subNames, " ")))
+	for _, sub := range subNames {
+		allFlags := append(subcmds[sub], globalFlags...)
+		b.WriteString(fmt.Sprintf("                    %s) COMPREPLY=($(compgen -W \"%s\" -- \"${cur}\")) ;;\n",
+			sub, strings.Join(allFlags, " ")))
+	}
+	b.WriteString("                esac\n            fi\n")
+	return b.String()
 }
 
 var bashCompletion = func() string {
@@ -77,17 +131,13 @@ var bashCompletion = func() string {
 		flags := append(commands[cmd], globalFlags...)
 		b.WriteString(fmt.Sprintf("        %s)\n", cmd))
 		if cmd == "workflow" {
-			b.WriteString(`            if [ ${COMP_CWORD} -eq 2 ]; then
-                COMPREPLY=($(compgen -W "create status cancel list" -- "${cur}"))
-            else
-                case "${COMP_WORDS[2]}" in
-`)
-			for sub, subFlags := range workflowSubcommands {
-				allFlags := append(subFlags, globalFlags...)
-				b.WriteString(fmt.Sprintf("                    %s) COMPREPLY=($(compgen -W \"%s\" -- \"${cur}\")) ;;\n",
-					sub, strings.Join(allFlags, " ")))
-			}
-			b.WriteString("                esac\n            fi\n")
+			b.WriteString(generateSubcommandCompletion(workflowSubcommands))
+		} else if cmd == "bulk" {
+			b.WriteString(generateSubcommandCompletion(bulkSubcommands))
+		} else if cmd == "system" {
+			b.WriteString(generateSubcommandCompletion(systemSubcommands))
+		} else if cmd == "webhooks" {
+			b.WriteString(generateSubcommandCompletion(webhooksSubcommands))
 		} else if cmd == "completion" {
 			b.WriteString(`            COMPREPLY=($(compgen -W "bash zsh fish" -- "${cur}"))
 `)
@@ -148,6 +198,40 @@ _ojs() {
             _describe 'subcommand' subcommands
             ;;
 `)
+		} else if cmd == "bulk" {
+			b.WriteString(`        bulk)
+            local -a subcommands
+            subcommands=(
+                'cancel:Bulk cancel jobs'
+                'retry:Bulk retry jobs'
+            )
+            _describe 'subcommand' subcommands
+            ;;
+`)
+		} else if cmd == "system" {
+			b.WriteString(`        system)
+            local -a subcommands
+            subcommands=(
+                'maintenance:Manage maintenance mode'
+                'config:View system configuration'
+            )
+            _describe 'subcommand' subcommands
+            ;;
+`)
+		} else if cmd == "webhooks" {
+			b.WriteString(`        webhooks)
+            local -a subcommands
+            subcommands=(
+                'create:Create a webhook subscription'
+                'list:List webhook subscriptions'
+                'get:Get webhook subscription details'
+                'delete:Delete a webhook subscription'
+                'test:Send a test webhook'
+                'rotate-secret:Rotate webhook signing secret'
+            )
+            _describe 'subcommand' subcommands
+            ;;
+`)
 		} else if cmd == "completion" {
 			b.WriteString(`        completion)
             _values 'shell' bash zsh fish
@@ -204,6 +288,31 @@ var fishCompletion = func() string {
 			} {
 				b.WriteString(fmt.Sprintf("complete -c ojs -n '__fish_seen_subcommand_from workflow' -a %s -d '%s'\n", sub, desc))
 			}
+		} else if cmd == "bulk" {
+			for sub, desc := range map[string]string{
+				"cancel": "Bulk cancel jobs",
+				"retry":  "Bulk retry jobs",
+			} {
+				b.WriteString(fmt.Sprintf("complete -c ojs -n '__fish_seen_subcommand_from bulk' -a %s -d '%s'\n", sub, desc))
+			}
+		} else if cmd == "system" {
+			for sub, desc := range map[string]string{
+				"maintenance": "Manage maintenance mode",
+				"config":      "View system configuration",
+			} {
+				b.WriteString(fmt.Sprintf("complete -c ojs -n '__fish_seen_subcommand_from system' -a %s -d '%s'\n", sub, desc))
+			}
+		} else if cmd == "webhooks" {
+			for sub, desc := range map[string]string{
+				"create":        "Create a webhook subscription",
+				"list":          "List webhook subscriptions",
+				"get":           "Get webhook details",
+				"delete":        "Delete a webhook subscription",
+				"test":          "Send a test webhook",
+				"rotate-secret": "Rotate webhook secret",
+			} {
+				b.WriteString(fmt.Sprintf("complete -c ojs -n '__fish_seen_subcommand_from webhooks' -a %s -d '%s'\n", sub, desc))
+			}
 		} else if cmd == "completion" {
 			for _, shell := range []string{"bash", "zsh", "fish"} {
 				b.WriteString(fmt.Sprintf("complete -c ojs -n '__fish_seen_subcommand_from completion' -a %s -d '%s completion'\n", shell, shell))
@@ -225,10 +334,23 @@ var commandDescriptions = map[string]string{
 	"cancel":      "Cancel a job",
 	"health":      "Check server health",
 	"queues":      "List and manage queues",
-	"workers":     "List active workers",
+	"workers":     "List and manage workers",
 	"dead-letter": "Manage dead letter queue",
 	"cron":        "Manage cron jobs",
 	"monitor":     "Live monitoring dashboard",
 	"workflow":    "Manage workflows",
+	"migrate":     "Migrate jobs from other systems",
 	"completion":  "Generate shell completions",
+	"jobs":        "List and search jobs",
+	"result":      "Get job result",
+	"bulk":        "Bulk cancel/retry/delete operations",
+	"priority":    "Update job priority",
+	"retries":     "View job retry history",
+	"retry":       "Retry a job",
+	"metrics":     "View server metrics",
+	"rate-limits": "Inspect and override rate limits",
+	"events":      "Stream server-sent events",
+	"system":      "System maintenance and config",
+	"webhooks":    "Manage webhook subscriptions",
+	"stats":       "Aggregate system statistics",
 }
