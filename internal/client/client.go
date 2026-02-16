@@ -95,3 +95,13 @@ func (c *Client) Post(path string, body any) ([]byte, int, error) {
 func (c *Client) Delete(path string) ([]byte, int, error) {
 	return c.do(http.MethodDelete, path, nil)
 }
+
+// Patch performs a PATCH request with a JSON body.
+func (c *Client) Patch(path string, body any) ([]byte, int, error) {
+	return c.do(http.MethodPatch, path, body)
+}
+
+// Put performs a PUT request with a JSON body.
+func (c *Client) Put(path string, body any) ([]byte, int, error) {
+	return c.do(http.MethodPut, path, body)
+}
