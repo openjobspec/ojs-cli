@@ -1,5 +1,9 @@
 # ojs-cli
 
+[![CI](https://github.com/openjobspec/ojs-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/openjobspec/ojs-cli/actions/workflows/ci.yml)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/openjobspec/ojs-cli)](https://go.dev/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+
 Command-line interface for [Open Job Spec](https://openjobspec.org) servers.
 
 ## Installation
@@ -66,6 +70,106 @@ ojs workflow list --state running
 # Live monitoring dashboard
 ojs monitor
 ojs monitor --interval 5s
+
+# --- New Commands ---
+
+# List and search jobs
+ojs jobs --state active --queue billing --type email.send --limit 50
+
+# Get job result (with optional wait)
+ojs result <job-id>
+ojs result <job-id> --wait --timeout 30
+
+# View retry history
+ojs retries <job-id>
+
+# Update job priority
+ojs priority <job-id> --set 5
+
+# Bulk operations
+ojs bulk cancel --ids job-1,job-2,job-3
+ojs bulk retry --ids job-1,job-2
+ojs bulk cancel --state available --queue old-queue
+
+# Enqueue with unique constraint
+ojs enqueue --type email.send --args '["user@example.com"]' --unique-key user-123 --unique-within 1h
+
+# Bulk enqueue from NDJSON file
+ojs enqueue --batch jobs.ndjson
+
+# Dead letter purge and stats
+ojs dead-letter --stats
+ojs dead-letter --purge
+ojs dead-letter --purge --older-than 7d
+
+# Cron trigger, history, pause/resume
+ojs cron --trigger daily-report
+ojs cron --history daily-report --history-limit 20
+ojs cron --pause daily-report
+ojs cron --resume daily-report
+
+# Queue create, delete, purge
+ojs queues --create billing --concurrency 5 --max-size 1000
+ojs queues --delete old-queue
+ojs queues --purge default --states completed,discarded
+
+# Rate limits
+ojs rate-limits
+ojs rate-limits --inspect email
+ojs rate-limits --override email --concurrency 20
+ojs rate-limits --override email --clear
+
+# Server metrics
+ojs metrics
+ojs metrics --format prometheus
+ojs metrics --format json
+
+# Event streaming (SSE)
+ojs events --types job.completed,job.failed --queue billing
+
+# System maintenance
+ojs system maintenance
+ojs system maintenance --enable --reason "scheduled upgrade"
+ojs system maintenance --disable
+ojs system config
+
+# --- Round 2 Commands ---
+
+# Retry a job
+ojs retry <job-id>
+
+# Bulk delete terminal jobs
+ojs bulk delete --ids job-1,job-2
+ojs bulk delete --state completed --older-than 7d
+
+# Webhook subscriptions
+ojs webhooks list
+ojs webhooks create --url https://example.com/hooks --events job.completed,job.failed --secret mysecret
+ojs webhooks get <subscription-id>
+ojs webhooks delete <subscription-id>
+ojs webhooks test <subscription-id>
+ojs webhooks rotate-secret <subscription-id>
+
+# System statistics
+ojs stats
+ojs stats --queue billing
+ojs stats --history --period 5m --since 24h
+
+# Worker management (per-worker)
+ojs workers --detail <worker-id>
+ojs workers --quiet-worker <worker-id>
+ojs workers --deregister <worker-id>
+
+# Cron detail and update
+ojs cron --detail daily-report
+ojs cron --update daily-report --expression '0 10 * * *'
+ojs cron --enabled true
+
+# Queue configuration
+ojs queues --config default --concurrency 10 --retention 7d
+
+# Job detail view (full envelope)
+ojs status <job-id> --detail
 
 # Shell completions
 ojs completion bash   # Add to ~/.bashrc: eval "$(ojs completion bash)"
