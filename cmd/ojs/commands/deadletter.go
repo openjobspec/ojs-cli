@@ -15,7 +15,18 @@ func DeadLetter(c *client.Client, args []string) error {
 	retryID := fs.String("retry", "", "Retry a dead letter job by ID")
 	deleteID := fs.String("delete", "", "Delete a dead letter job by ID")
 	limit := fs.Int("limit", 25, "Max results to return")
+	purge := fs.Bool("purge", false, "Purge all dead letter jobs")
+	stats := fs.Bool("stats", false, "Show dead letter queue statistics")
+	olderThan := fs.String("older-than", "", "Purge jobs older than duration (e.g. 7d, 24h)")
 	fs.Parse(args)
+
+	if *stats {
+		return deadLetterStats(c)
+	}
+
+	if *purge {
+		return deadLetterPurge(c, *olderThan)
+	}
 
 	if *retryID != "" {
 		data, _, err := c.Post("/dead-letter/"+*retryID+"/retry", nil)
@@ -77,5 +88,75 @@ func listDeadLetter(c *client.Client, limit int) error {
 		})
 	}
 	output.Table(headers, rows)
+	return nil
+}
+
+func deadLetterStats(c *client.Client) error {
+	data, _, err := c.Get("/dead-letter/stats")
+	if err != nil {
+		return err
+	}
+
+	if output.Format == "json" {
+		var result any
+		json.Unmarshal(data, &result)
+		return output.JSON(result)
+	}
+
+	var resp struct {
+		Total    int `json:"total"`
+		ByQueue  map[string]int `json:"by_queue"`
+		ByType   map[string]int `json:"by_type"`
+	}
+	json.Unmarshal(data, &resp)
+
+	fmt.Printf("Dead letter statistics: %d total\n\n", resp.Total)
+
+	if len(resp.ByQueue) > 0 {
+		fmt.Println("By Queue:")
+		headers := []string{"QUEUE", "COUNT"}
+		rows := make([][]string, 0, len(resp.ByQueue))
+		for q, count := range resp.ByQueue {
+			rows = append(rows, []string{q, fmt.Sprintf("%d", count)})
+		}
+		output.Table(headers, rows)
+		fmt.Println()
+	}
+
+	if len(resp.ByType) > 0 {
+		fmt.Println("By Job Type:")
+		headers := []string{"TYPE", "COUNT"}
+		rows := make([][]string, 0, len(resp.ByType))
+		for t, count := range resp.ByType {
+			rows = append(rows, []string{t, fmt.Sprintf("%d", count)})
+		}
+		output.Table(headers, rows)
+	}
+
+	return nil
+}
+
+func deadLetterPurge(c *client.Client, olderThan string) error {
+	path := "/dead-letter/purge"
+	if olderThan != "" {
+		path += "?older_than=" + olderThan
+	}
+
+	data, _, err := c.Post(path, nil)
+	if err != nil {
+		return err
+	}
+
+	if output.Format == "json" {
+		var result any
+		json.Unmarshal(data, &result)
+		return output.JSON(result)
+	}
+
+	var resp struct {
+		Deleted int `json:"deleted"`
+	}
+	json.Unmarshal(data, &resp)
+	output.Success("Purged %d dead letter jobs", resp.Deleted)
 	return nil
 }

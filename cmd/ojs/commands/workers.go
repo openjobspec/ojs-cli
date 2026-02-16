@@ -14,8 +14,20 @@ func Workers(c *client.Client, args []string) error {
 	fs := flag.NewFlagSet("workers", flag.ExitOnError)
 	quiet := fs.Bool("quiet", false, "Signal all workers to stop fetching new jobs")
 	resume := fs.Bool("resume", false, "Signal all workers to resume fetching jobs")
+	detail := fs.String("detail", "", "Show detailed info for a specific worker ID")
+	quietWorker := fs.String("quiet-worker", "", "Signal a specific worker to stop fetching")
+	deregister := fs.String("deregister", "", "Deregister a stale worker by ID")
 	fs.Parse(args)
 
+	if *detail != "" {
+		return workerDetail(c, *detail)
+	}
+	if *quietWorker != "" {
+		return quietSpecificWorker(c, *quietWorker)
+	}
+	if *deregister != "" {
+		return deregisterWorker(c, *deregister)
+	}
 	if *quiet {
 		return setWorkerDirective(c, "quiet")
 	}
@@ -93,5 +105,75 @@ func setWorkerDirective(c *client.Client, directive string) error {
 	case "resume":
 		output.Success("Workers signaled to resume fetching jobs")
 	}
+	return nil
+}
+
+func workerDetail(c *client.Client, workerID string) error {
+	data, _, err := c.Get("/admin/workers/" + workerID)
+	if err != nil {
+		return err
+	}
+
+	if output.Format == "json" {
+		var result any
+		json.Unmarshal(data, &result)
+		return output.JSON(result)
+	}
+
+	var w struct {
+		ID            string   `json:"id"`
+		State         string   `json:"state"`
+		Directive     string   `json:"directive"`
+		ActiveJobs    int      `json:"active_jobs"`
+		Queues        []string `json:"queues"`
+		LastHeartbeat string   `json:"last_heartbeat"`
+		StartedAt     string   `json:"started_at"`
+		Hostname      string   `json:"hostname"`
+		PID           int      `json:"pid"`
+	}
+	json.Unmarshal(data, &w)
+
+	queuesStr := "-"
+	if len(w.Queues) > 0 {
+		queuesStr = ""
+		for i, q := range w.Queues {
+			if i > 0 {
+				queuesStr += ", "
+			}
+			queuesStr += q
+		}
+	}
+
+	headers := []string{"FIELD", "VALUE"}
+	rows := [][]string{
+		{"ID", w.ID},
+		{"State", w.State},
+		{"Directive", w.Directive},
+		{"Active Jobs", fmt.Sprintf("%d", w.ActiveJobs)},
+		{"Queues", queuesStr},
+		{"Hostname", w.Hostname},
+		{"PID", fmt.Sprintf("%d", w.PID)},
+		{"Started", w.StartedAt},
+		{"Last Heartbeat", w.LastHeartbeat},
+	}
+	output.Table(headers, rows)
+	return nil
+}
+
+func quietSpecificWorker(c *client.Client, workerID string) error {
+	_, _, err := c.Post("/admin/workers/"+workerID+"/quiet", nil)
+	if err != nil {
+		return err
+	}
+	output.Success("Worker %s signaled to stop fetching", workerID)
+	return nil
+}
+
+func deregisterWorker(c *client.Client, workerID string) error {
+	_, _, err := c.Delete("/admin/workers/" + workerID)
+	if err != nil {
+		return err
+	}
+	output.Success("Worker %s deregistered", workerID)
 	return nil
 }
