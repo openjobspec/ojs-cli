@@ -72,6 +72,8 @@ func main() {
 		err = commands.Monitor(c, args[1:])
 	case "workflow":
 		err = commands.Workflow(c, args[1:])
+	case "migrate":
+		err = commands.Migrate(c, args[1:])
 	case "completion":
 		err = commands.Completion(args[1:])
 	default:
@@ -103,6 +105,7 @@ Commands:
   cron         Manage cron jobs
   monitor      Live monitoring dashboard
   workflow     Manage workflows
+  migrate      Migrate jobs from other systems
   completion   Generate shell completions
 
 Global Flags:
