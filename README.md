@@ -177,6 +177,32 @@ ojs completion zsh    # Add to ~/.zshrc: eval "$(ojs completion zsh)"
 ojs completion fish   # Save to ~/.config/fish/completions/ojs.fish
 ```
 
+## Migration
+
+Migrate jobs from existing job systems to OJS:
+
+```bash
+# Analyze a Sidekiq installation
+ojs migrate analyze sidekiq --redis redis://localhost:6379
+
+# Analyze a BullMQ installation
+ojs migrate analyze bullmq --redis redis://localhost:6379
+
+# Analyze a Celery installation
+ojs migrate analyze celery --redis redis://localhost:6379
+
+# Export jobs to NDJSON format
+ojs migrate export sidekiq --redis redis://localhost:6379 --output jobs.ndjson
+
+# Import into an OJS server
+ojs migrate import --file jobs.ndjson
+```
+
+Supported sources: `sidekiq`, `bullmq`, `celery`. The `analyze` subcommand provides a
+non-destructive report of queue names, job counts, and types. The `export` subcommand
+extracts jobs to a portable NDJSON file. The `import` subcommand batch-enqueues jobs
+into the target OJS server.
+
 ## Configuration
 
 | Environment Variable | Description | Default |
