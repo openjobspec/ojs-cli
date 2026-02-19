@@ -11,10 +11,10 @@ import (
 	"github.com/openjobspec/ojs-cli/internal/output"
 )
 
-// Migrate implements the migration wizard with subcommands: analyze, export, import.
+// Migrate implements the migration wizard with subcommands: analyze, export, import, validate.
 func Migrate(c *client.Client, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("missing subcommand\n\nUsage:\n  ojs migrate analyze <source> --redis <url>\n  ojs migrate export <source> --redis <url> --output <file>\n  ojs migrate import --file <file>")
+		return fmt.Errorf("missing subcommand\n\nUsage:\n  ojs migrate analyze <source> --redis <url>\n  ojs migrate export <source> --redis <url> --output <file>\n  ojs migrate import --file <file> [--dry-run]\n  ojs migrate validate --file <file>\n\nSupported sources: sidekiq, bullmq, celery")
 	}
 
 	switch args[0] {
@@ -24,8 +24,10 @@ func Migrate(c *client.Client, args []string) error {
 		return migrateExport(args[1:])
 	case "import":
 		return migrateImport(c, args[1:])
+	case "validate":
+		return migrateValidate(args[1:])
 	default:
-		return fmt.Errorf("unknown migrate subcommand: %s\n\nSubcommands: analyze, export, import", args[0])
+		return fmt.Errorf("unknown migrate subcommand: %s\n\nSubcommands: analyze, export, import, validate", args[0])
 	}
 }
 
@@ -122,12 +124,38 @@ func migrateExport(args []string) error {
 func migrateImport(c *client.Client, args []string) error {
 	fs := flag.NewFlagSet("migrate import", flag.ContinueOnError)
 	file := fs.String("file", "", "NDJSON file to import (required)")
+	dryRun := fs.Bool("dry-run", false, "Validate and count jobs without actually importing")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
 	}
 
 	if *file == "" {
-		return fmt.Errorf("--file is required\n\nUsage: ojs migrate import --file <file>")
+		return fmt.Errorf("--file is required\n\nUsage: ojs migrate import --file <file> [--dry-run]")
+	}
+
+	if *dryRun {
+		vr, err := migrate.ValidateFile(*file)
+		if err != nil {
+			return fmt.Errorf("validation failed: %w", err)
+		}
+
+		if output.Format == "json" {
+			return output.JSON(vr)
+		}
+
+		output.Success("Dry run: %d valid, %d invalid out of %d total jobs",
+			vr.Valid, vr.Invalid, vr.Total)
+		if vr.Invalid > 0 {
+			fmt.Fprintf(os.Stderr, "\nFirst errors:\n")
+			limit := vr.Invalid
+			if limit > 5 {
+				limit = 5
+			}
+			for i := 0; i < limit; i++ {
+				fmt.Fprintf(os.Stderr, "  Line %d: %s\n", vr.Errors[i].Line, vr.Errors[i].Message)
+			}
+		}
+		return nil
 	}
 
 	result, err := migrate.ImportFile(c, *file, func(imported, total int) {
@@ -159,4 +187,52 @@ func newSource(name, redisURL string) (migrate.Source, error) {
 	default:
 		return nil, fmt.Errorf("unsupported source: %s\n\nSupported sources: sidekiq, bullmq, celery", name)
 	}
+}
+
+func migrateValidate(args []string) error {
+	fs := flag.NewFlagSet("migrate validate", flag.ContinueOnError)
+	file := fs.String("file", "", "NDJSON file to validate (required)")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
+
+	if *file == "" {
+		return fmt.Errorf("--file is required\n\nUsage: ojs migrate validate --file <file>")
+	}
+
+	result, err := migrate.ValidateFile(*file)
+	if err != nil {
+		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	if output.Format == "json" {
+		return output.JSON(result)
+	}
+
+	if result.Invalid == 0 {
+		output.Success("All %d jobs are valid", result.Total)
+	} else {
+		fmt.Printf("Validation: %d valid, %d invalid out of %d total\n\n",
+			result.Valid, result.Invalid, result.Total)
+
+		headers := []string{"LINE", "ERROR"}
+		var rows [][]string
+		limit := len(result.Errors)
+		if limit > 20 {
+			limit = 20
+		}
+		for i := 0; i < limit; i++ {
+			rows = append(rows, []string{
+				fmt.Sprintf("%d", result.Errors[i].Line),
+				result.Errors[i].Message,
+			})
+		}
+		output.Table(headers, rows)
+
+		if len(result.Errors) > 20 {
+			fmt.Printf("\n... and %d more errors\n", len(result.Errors)-20)
+		}
+	}
+
+	return nil
 }

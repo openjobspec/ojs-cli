@@ -241,6 +241,14 @@ func TestMigrate_UnsupportedSource(t *testing.T) {
 	}
 }
 
+func TestMigrate_ValidateSubcommand(t *testing.T) {
+	c := newTestClient(nil)
+	err := Migrate(c, []string{"validate"})
+	if err == nil {
+		t.Fatal("expected error for missing --file")
+	}
+}
+
 func TestSidekiqToOJSConversion(t *testing.T) {
 	// Verify full conversion pipeline
 	raw := `{"class":"Reports::DailyDigest","args":[42,true],"queue":"reports","retry":5,"jid":"xyz"}`
