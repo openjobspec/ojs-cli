@@ -14,7 +14,7 @@ import (
 // Migrate implements the migration wizard with subcommands: analyze, export, import, validate.
 func Migrate(c *client.Client, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("missing subcommand\n\nUsage:\n  ojs migrate analyze <source> --redis <url>\n  ojs migrate export <source> --redis <url> --output <file>\n  ojs migrate import --file <file> [--dry-run]\n  ojs migrate validate --file <file>\n\nSupported sources: sidekiq, bullmq, celery, faktory")
+		return fmt.Errorf("missing subcommand\n\nUsage:\n  ojs migrate analyze <source> --redis <url>\n  ojs migrate export <source> --redis <url> --output <file>\n  ojs migrate import --file <file> [--dry-run]\n  ojs migrate validate --file <file>\n\nSupported sources: sidekiq, bullmq, celery, faktory, river")
 	}
 
 	switch args[0] {
@@ -33,7 +33,7 @@ func Migrate(c *client.Client, args []string) error {
 
 func migrateAnalyze(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("missing source\n\nSupported sources: sidekiq, bullmq, celery, faktory")
+		return fmt.Errorf("missing source\n\nSupported sources: sidekiq, bullmq, celery, faktory, river")
 	}
 
 	sourceName := args[0]
@@ -82,7 +82,7 @@ func migrateAnalyze(args []string) error {
 
 func migrateExport(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("missing source\n\nSupported sources: sidekiq, bullmq, celery, faktory")
+		return fmt.Errorf("missing source\n\nSupported sources: sidekiq, bullmq, celery, faktory, river")
 	}
 
 	sourceName := args[0]
@@ -186,6 +186,8 @@ func newSource(name, redisURL string) (migrate.Source, error) {
 		return migrate.NewCelerySource(redisURL)
 	case "faktory":
 		return migrate.NewFaktorySource(redisURL, "")
+	case "river":
+		return migrate.NewRiverSource(redisURL)
 	default:
 		return nil, fmt.Errorf("unsupported source: %s\n\nSupported sources: sidekiq, bullmq, celery", name)
 	}

@@ -289,6 +289,41 @@ func TestParseFaktoryJob_WithSchedule(t *testing.T) {
 	}
 }
 
+func TestParseRiverJob(t *testing.T) {
+	raw := `{"id":100,"kind":"send_email","args":{"to":"user@test.com"},"queue":"emails","state":"available","priority":5}`
+
+	job, err := migrate.ParseRiverJob("emails", raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if job.Type != "send_email" {
+		t.Errorf("type = %q, want %q", job.Type, "send_email")
+	}
+	if job.Queue != "emails" {
+		t.Errorf("queue = %q, want %q", job.Queue, "emails")
+	}
+	if job.Priority == nil || *job.Priority != 5 {
+		t.Errorf("priority = %v, want 5", job.Priority)
+	}
+
+	// Args should be wrapped in array
+	var args []json.RawMessage
+	json.Unmarshal(job.Args, &args)
+	if len(args) != 1 {
+		t.Fatalf("args length = %d, want 1", len(args))
+	}
+}
+
+func TestParseRiverJob_MissingKind(t *testing.T) {
+	raw := `{"id":200,"args":{},"queue":"default","state":"available"}`
+
+	_, err := migrate.ParseRiverJob("default", raw)
+	if err == nil {
+		t.Fatal("expected error for missing kind")
+	}
+}
+
 func TestMigrate_ValidateSubcommand(t *testing.T) {
 	c := newTestClient(nil)
 	err := Migrate(c, []string{"validate"})
