@@ -241,6 +241,54 @@ func TestMigrate_UnsupportedSource(t *testing.T) {
 	}
 }
 
+func TestParseFaktoryJob(t *testing.T) {
+	raw := `{"jid":"f123","jobtype":"EmailSender","args":["user@test.com",42],"queue":"emails","priority":3}`
+
+	job, err := migrate.ParseFaktoryJob(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if job.Type != "EmailSender" {
+		t.Errorf("type = %q, want %q", job.Type, "EmailSender")
+	}
+	if job.Queue != "emails" {
+		t.Errorf("queue = %q, want %q", job.Queue, "emails")
+	}
+	if job.Priority == nil || *job.Priority != 3 {
+		t.Errorf("priority = %v, want 3", job.Priority)
+	}
+	if job.Meta["faktory_jid"] != "f123" {
+		t.Errorf("meta.faktory_jid = %v, want f123", job.Meta["faktory_jid"])
+	}
+}
+
+func TestParseFaktoryJob_DefaultQueue(t *testing.T) {
+	raw := `{"jid":"f456","jobtype":"SimpleJob","args":[]}`
+
+	job, err := migrate.ParseFaktoryJob(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if job.Queue != "default" {
+		t.Errorf("queue = %q, want %q", job.Queue, "default")
+	}
+}
+
+func TestParseFaktoryJob_WithSchedule(t *testing.T) {
+	raw := `{"jid":"f789","jobtype":"DelayedJob","args":[1],"queue":"default","at":"2025-01-15T10:30:00Z"}`
+
+	job, err := migrate.ParseFaktoryJob(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if job.ScheduledAt != "2025-01-15T10:30:00Z" {
+		t.Errorf("scheduled_at = %q, want %q", job.ScheduledAt, "2025-01-15T10:30:00Z")
+	}
+}
+
 func TestMigrate_ValidateSubcommand(t *testing.T) {
 	c := newTestClient(nil)
 	err := Migrate(c, []string{"validate"})
