@@ -104,7 +104,7 @@ func TestHealth_Success(t *testing.T) {
 	c := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]any{
-			"status": "ok", "version": "1.0.0-rc.1", "uptime_seconds": 42,
+			"status": "ok", "version": "1.0", "uptime_seconds": 42,
 			"backend": map[string]any{"type": "redis", "status": "connected"},
 		})
 	})
