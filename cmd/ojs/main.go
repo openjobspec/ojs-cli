@@ -100,6 +100,8 @@ func main() {
 		err = commands.Stats(c, args[1:])
 	case "retry":
 		err = commands.Retry(c, args[1:])
+	case "doctor":
+		err = commands.Doctor(c, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
 		printUsage()
@@ -146,6 +148,7 @@ Queue & Server Commands:
 
 Utility Commands:
   migrate      Migrate jobs from other systems
+  doctor       Run health and production readiness checks
   completion   Generate shell completions
 
 Global Flags:
