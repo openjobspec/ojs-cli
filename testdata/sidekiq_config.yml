@@ -1,0 +1,18 @@
+---
+:concurrency: 10
+:queues:
+  - default
+  - mailers
+  - reports
+
+workers:
+  - class: EmailWorker
+    queue: mailers
+    retry: 5
+    cron: "0 */2 * * *"
+  - class: ReportGenerator
+    queue: reports
+    retry: 3
+  - class: HardWorker
+    queue: default
+    retry: true

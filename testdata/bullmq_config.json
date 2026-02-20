@@ -1,0 +1,41 @@
+{
+  "queues": [
+    {
+      "name": "email",
+      "jobs": [
+        {
+          "name": "email.send",
+          "opts": {
+            "attempts": 5,
+            "backoff": {
+              "type": "exponential",
+              "delay": 1000
+            }
+          }
+        },
+        {
+          "name": "email.verify",
+          "opts": {
+            "attempts": 3,
+            "delay": 5000
+          }
+        }
+      ]
+    },
+    {
+      "name": "reports",
+      "jobs": [
+        {
+          "name": "report.generate",
+          "opts": {
+            "attempts": 2,
+            "backoff": {
+              "type": "fixed",
+              "delay": 30000
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "task_routes": {
+    "myapp.tasks.send_email": {"queue": "email"},
+    "myapp.tasks.generate_report": {"queue": "reports"},
+    "myapp.tasks.cleanup": {"queue": "celery"}
+  },
+  "task_annotations": {
+    "myapp.tasks.send_email": {
+      "max_retries": 5,
+      "rate_limit": "10/m"
+    },
+    "myapp.tasks.generate_report": {
+      "max_retries": 2,
+      "rate_limit": "5/h"
+    },
+    "myapp.tasks.cleanup": {
+      "max_retries": 1
+    }
+  },
+  "beat_schedule": {
+    "daily-cleanup": {
+      "task": "myapp.tasks.cleanup",
+      "schedule": {
+        "crontab": "0 2 * * *"
+      }
+    }
+  }
+}

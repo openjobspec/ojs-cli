@@ -11,11 +11,15 @@ import (
 	"github.com/openjobspec/ojs-cli/internal/output"
 )
 
-// Migrate implements the migration wizard with subcommands: analyze, export, import, validate.
+// Migrate implements the migration wizard with subcommands: analyze, export, import, validate,
+// generate, sidekiq, bullmq, celery, detect, validate-config.
 func Migrate(c *client.Client, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("missing subcommand\n\nUsage:\n  ojs migrate analyze <source> --redis <url>\n  ojs migrate export <source> --redis <url> --output <file>\n  ojs migrate import --file <file> [--dry-run]\n  ojs migrate validate --file <file>\n\nSupported sources: sidekiq, bullmq, celery, faktory, river")
+		return fmt.Errorf("missing subcommand\n\nUsage:\n  ojs migrate analyze <source> --redis <url>\n  ojs migrate export <source> --redis <url> --output <file>\n  ojs migrate import --file <file> [--dry-run]\n  ojs migrate validate --file <file>\n  ojs migrate generate --source <system> [--output <dir>]\n  ojs migrate sidekiq <config-file> [--output <file>] [--dry-run]\n  ojs migrate bullmq <config-file> [--output <file>] [--dry-run]\n  ojs migrate celery <config-file> [--output <file>] [--dry-run]\n  ojs migrate detect <directory>\n  ojs migrate validate-config <ojs-config.json>\n\nSupported sources: sidekiq, bullmq, celery, faktory, river")
 	}
+
+	// Parse shared flags for config-file converters
+	dryRun, outputFile, remaining := parseMigrateFlags(args[1:])
 
 	switch args[0] {
 	case "analyze":
@@ -26,9 +30,39 @@ func Migrate(c *client.Client, args []string) error {
 		return migrateImport(c, args[1:])
 	case "validate":
 		return migrateValidate(args[1:])
+	case "generate":
+		return MigrateGenerate(args[1:])
+	case "sidekiq":
+		return migrateSidekiq(remaining, dryRun, outputFile)
+	case "bullmq":
+		return migrateBullMQ(remaining, dryRun, outputFile)
+	case "celery":
+		return migrateCelery(remaining, dryRun, outputFile)
+	case "detect":
+		return migrateDetect(args[1:])
+	case "validate-config":
+		return migrateValidateConfig(args[1:])
 	default:
-		return fmt.Errorf("unknown migrate subcommand: %s\n\nSubcommands: analyze, export, import, validate", args[0])
+		return fmt.Errorf("unknown migrate subcommand: %s\n\nSubcommands: analyze, export, import, validate, generate, sidekiq, bullmq, celery, detect, validate-config", args[0])
 	}
+}
+
+// parseMigrateFlags extracts --dry-run and --output flags, returning remaining positional args.
+func parseMigrateFlags(args []string) (dryRun bool, outputFile string, remaining []string) {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--dry-run":
+			dryRun = true
+		case "--output":
+			if i+1 < len(args) {
+				outputFile = args[i+1]
+				i++
+			}
+		default:
+			remaining = append(remaining, args[i])
+		}
+	}
+	return
 }
 
 func migrateAnalyze(args []string) error {
