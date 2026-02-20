@@ -81,6 +81,11 @@ func (c *Client) do(method, path string, body any) ([]byte, int, error) {
 	return data, resp.StatusCode, nil
 }
 
+// BaseURL returns the raw server URL (without API prefix).
+func (c *Client) BaseURL() string {
+	return c.cfg.ServerURL
+}
+
 // Get performs a GET request.
 func (c *Client) Get(path string) ([]byte, int, error) {
 	return c.do(http.MethodGet, path, nil)
