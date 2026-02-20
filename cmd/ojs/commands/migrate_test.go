@@ -353,3 +353,4 @@ func TestSidekiqToOJSConversion(t *testing.T) {
 		t.Errorf("queue = %v, want reports", result["queue"])
 	}
 }
+
