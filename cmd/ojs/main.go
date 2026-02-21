@@ -163,3 +163,4 @@ Environment Variables:
   OJS_OUTPUT      Default output format (table|json)
 `)
 }
+
