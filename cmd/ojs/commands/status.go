@@ -151,3 +151,4 @@ func jobDetail(c *client.Client, jobID string) error {
 	output.Table(headers, rows)
 	return nil
 }
+
