@@ -405,3 +405,4 @@ func TestMigrateSidekiq_OutputFile(t *testing.T) {
 		t.Errorf("output jobs = %d, want 3", len(result.Jobs))
 	}
 }
+
