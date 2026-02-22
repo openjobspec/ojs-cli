@@ -188,3 +188,4 @@ func TestClient_ErrorResponse_NoBody(t *testing.T) {
 		t.Errorf("error = %q, want to contain 'HTTP 502'", err.Error())
 	}
 }
+
