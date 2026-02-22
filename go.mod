@@ -1,6 +1,6 @@
 module github.com/openjobspec/ojs-cli
 
-go 1.24.4
+go 1.24
 
 require (
 	github.com/redis/go-redis/v9 v9.17.3
