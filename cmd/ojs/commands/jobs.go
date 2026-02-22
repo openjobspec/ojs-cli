@@ -64,3 +64,4 @@ func Jobs(c *client.Client, args []string) error {
 	output.Table(headers, rows)
 	return nil
 }
+
