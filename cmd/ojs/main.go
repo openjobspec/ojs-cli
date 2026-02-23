@@ -102,6 +102,8 @@ func main() {
 		err = commands.Retry(c, args[1:])
 	case "doctor":
 		err = commands.Doctor(c, args[1:])
+	case "codegen":
+		err = commands.Codegen(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
 		printUsage()
@@ -149,6 +151,7 @@ Queue & Server Commands:
 Utility Commands:
   migrate      Migrate jobs from other systems
   doctor       Run health and production readiness checks
+  codegen      Generate type-safe SDK code from job definitions
   completion   Generate shell completions
 
 Global Flags:
