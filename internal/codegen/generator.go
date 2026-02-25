@@ -309,3 +309,4 @@ async def enqueue_{{ snakeCase .Type }}(client: "OJSClient", args: {{ pascalCase
     """Enqueue a {{ .Type }} job with type-safe arguments."""
     return await client.enqueue("{{ .Type }}", vars(args), queue="{{ .Queue }}")
 {{ end }}`
+
