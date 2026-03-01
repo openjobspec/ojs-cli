@@ -42,8 +42,10 @@ func Migrate(c *client.Client, args []string) error {
 		return migrateDetect(args[1:])
 	case "validate-config":
 		return migrateValidateConfig(args[1:])
+	case "shadow":
+		return migrateShadow(c, args[1:])
 	default:
-		return fmt.Errorf("unknown migrate subcommand: %s\n\nSubcommands: analyze, export, import, validate, generate, sidekiq, bullmq, celery, detect, validate-config", args[0])
+		return fmt.Errorf("unknown migrate subcommand: %s\n\nSubcommands: analyze, export, import, validate, generate, sidekiq, bullmq, celery, detect, validate-config, shadow", args[0])
 	}
 }
 

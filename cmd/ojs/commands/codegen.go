@@ -11,7 +11,7 @@ import (
 func Codegen(args []string) error {
 	fs := flag.NewFlagSet("codegen", flag.ExitOnError)
 	manifest := fs.String("manifest", "ojs-jobs.yaml", "Path to job type manifest (YAML or JSON)")
-	lang := fs.String("lang", "go", "Target language: go, typescript, python")
+	lang := fs.String("lang", "go", "Target language: go, typescript, python, java, rust, ruby, dotnet")
 	outDir := fs.String("out", "./generated", "Output directory")
 	pkg := fs.String("package", "", "Package name override (Go only)")
 	fs.Parse(args)
@@ -36,8 +36,16 @@ func Codegen(args []string) error {
 		language = codegen.LangTypeScript
 	case "python", "py":
 		language = codegen.LangPython
+	case "java":
+		language = codegen.LangJava
+	case "rust":
+		language = codegen.LangRust
+	case "ruby":
+		language = codegen.LangRuby
+	case "dotnet", "csharp":
+		language = codegen.LangDotNet
 	default:
-		return fmt.Errorf("unsupported language: %s (supported: go, typescript, python)", *lang)
+		return fmt.Errorf("unsupported language: %s (supported: go, typescript, python, java, rust, ruby, dotnet)", *lang)
 	}
 
 	gen := codegen.NewGenerator(m, language, *outDir)

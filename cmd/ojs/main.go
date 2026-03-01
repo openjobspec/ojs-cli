@@ -52,6 +52,8 @@ func main() {
 
 	var err error
 	switch args[0] {
+	case "dev":
+		err = commands.Dev(args[1:])
 	case "enqueue":
 		err = commands.Enqueue(c, args[1:])
 	case "status":
@@ -108,6 +110,10 @@ func main() {
 		err = commands.Codegen(args[1:])
 	case "contract":
 		err = commands.RunContractCommand(args[1:])
+	case "setup":
+		err = commands.RunSetupCommand(args[1:])
+	case "create":
+		err = commands.CreateProject(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
 		printUsage()
