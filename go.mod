@@ -1,12 +1,10 @@
 module github.com/openjobspec/ojs-cli
 
-go 1.24.0
-
-toolchain go1.24.4
+go 1.25.0
 
 require (
 	github.com/redis/go-redis/v9 v9.17.3
-	golang.org/x/net v0.50.0
+	golang.org/x/net v0.51.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
