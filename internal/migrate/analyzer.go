@@ -305,11 +305,12 @@ client.Enqueue(ctx, "%s", ojs.Args{"key": "value"},
 }
 
 func generateGoWorker(ojsType string, job JobDefinition) string {
-	return fmt.Sprintf(`// Handle %s jobs
+	return fmt.Sprintf(`// Handle %s jobs (migrated from %s)
 worker.Register("%s", func(ctx ojs.JobContext) error {
-    // TODO: migrate handler logic from %s
+    // Migrate your %s handler logic here.
+    // Original source: %s
     return nil
-})`, job.Name, ojsType, job.Name)
+})`, job.Name, job.Framework, ojsType, job.Name, job.FilePath)
 }
 
 func generateTSClient(ojsType string, job JobDefinition) string {
@@ -319,10 +320,11 @@ await client.enqueue('%s', { key: 'value' }, { queue: '%s' });`,
 }
 
 func generateTSWorker(ojsType string, job JobDefinition) string {
-	return fmt.Sprintf(`// Handle %s jobs
+	return fmt.Sprintf(`// Handle %s jobs (migrated from %s)
 worker.register('%s', async (ctx) => {
-  // TODO: migrate handler logic from %s
-});`, job.Name, ojsType, job.Name)
+  // Migrate your %s handler logic here.
+  // Original source: %s
+});`, job.Name, job.Framework, ojsType, job.Name, job.FilePath)
 }
 
 func generatePythonClient(ojsType string, job JobDefinition) string {
@@ -332,9 +334,10 @@ await client.enqueue('%s', {'key': 'value'}, queue='%s')`,
 }
 
 func generatePythonWorker(ojsType string, job JobDefinition) string {
-	return fmt.Sprintf(`# Handle %s jobs
+	return fmt.Sprintf(`# Handle %s jobs (migrated from %s)
 @worker.register('%s')
 async def handle_%s(ctx):
-    # TODO: migrate handler logic from %s
-    pass`, job.Name, ojsType, strings.ReplaceAll(ojsType, ".", "_"), job.Name)
+    # Migrate your %s handler logic here.
+    # Original source: %s
+    pass`, job.Name, job.Framework, ojsType, strings.ReplaceAll(ojsType, ".", "_"), job.Name, job.FilePath)
 }

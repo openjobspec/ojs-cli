@@ -190,7 +190,7 @@ func ToOJSYAML(workflows []WorkflowDef) string {
 			b.WriteString("      - name: input\n")
 			b.WriteString("        type: object\n")
 			b.WriteString("        required: true\n")
-			b.WriteString("        description: \"TODO: define typed args\"\n")
+			b.WriteString(fmt.Sprintf("        description: \"Input arguments — define typed args matching your %s handler\"\n", step.Name))
 			b.WriteString("    retry:\n")
 			b.WriteString("      max_attempts: 3\n")
 			b.WriteString("      backoff: exponential\n")
