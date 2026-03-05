@@ -296,3 +296,4 @@ func migrateValidateConfig(args []string) error {
 	enc.SetIndent("", "  ")
 	return enc.Encode(result)
 }
+
