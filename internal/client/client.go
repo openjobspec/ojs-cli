@@ -110,3 +110,4 @@ func (c *Client) Patch(path string, body any) ([]byte, int, error) {
 func (c *Client) Put(path string, body any) ([]byte, int, error) {
 	return c.do(http.MethodPut, path, body)
 }
+
