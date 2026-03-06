@@ -44,3 +44,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cron detail/update**: `--detail <name>` for full cron info, `--update <name>` for PATCH updates, `--enabled` filter for list
 - **Queue config**: `--config <name>` with `--concurrency`, `--max-size`, `--retention` for updating queue configuration
 - **Status detail**: `--detail` flag for full admin job envelope (args, meta, options, error history)
+
