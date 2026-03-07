@@ -31,3 +31,4 @@ func Retry(c *client.Client, args []string) error {
 	output.Success("Job %s retried (state=%s)", jobID, str(resp["state"]))
 	return nil
 }
+
