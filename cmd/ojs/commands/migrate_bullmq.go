@@ -112,3 +112,4 @@ func convertBullMQConfig(data []byte) (*ojsMigrateOutput, error) {
 
 	return result, nil
 }
+
