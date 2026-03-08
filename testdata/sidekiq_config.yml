@@ -16,3 +16,4 @@ workers:
   - class: HardWorker
     queue: default
     retry: true
+
