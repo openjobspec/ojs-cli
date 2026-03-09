@@ -247,4 +247,3 @@ make build    # Build binary to bin/ojs
 make test     # Run tests
 make lint     # Run go vet
 ```
-
