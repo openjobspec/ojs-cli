@@ -6,9 +6,15 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
 
 	"github.com/openjobspec/ojs-cli/internal/client"
 	"github.com/openjobspec/ojs-cli/internal/output"
+)
+
+var (
+	typePattern  = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`)
+	queuePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9\-\.]*$`)
 )
 
 // Enqueue creates a new job.
@@ -31,6 +37,18 @@ func Enqueue(c *client.Client, args []string) error {
 
 	if *jobType == "" {
 		return fmt.Errorf("--type is required\n\nUsage: ojs enqueue --type <type> [--queue <queue>] [--args '<json>']")
+	}
+	if len(*jobType) > 255 {
+		return fmt.Errorf("--type must not exceed 255 characters")
+	}
+	if !typePattern.MatchString(*jobType) {
+		return fmt.Errorf("invalid --type %q: must match ^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$", *jobType)
+	}
+	if len(*queue) > 128 {
+		return fmt.Errorf("--queue must not exceed 128 characters")
+	}
+	if !queuePattern.MatchString(*queue) {
+		return fmt.Errorf("invalid --queue %q: must match ^[a-z0-9][a-z0-9\\-.]*$", *queue)
 	}
 
 	body := map[string]any{
@@ -78,12 +96,16 @@ func Enqueue(c *client.Client, args []string) error {
 
 	if output.Format == "json" {
 		var result any
-		json.Unmarshal(data, &result)
+		if err := json.Unmarshal(data, &result); err != nil {
+			return fmt.Errorf("parse response: %w", err)
+		}
 		return output.JSON(result)
 	}
 
 	var job map[string]any
-	json.Unmarshal(data, &job)
+	if err := json.Unmarshal(data, &job); err != nil {
+		return fmt.Errorf("parse response: %w", err)
+	}
 	output.Success("Job enqueued: %s (type=%s, queue=%s, state=%s)",
 		job["id"], job["type"], job["queue"], job["state"])
 	return nil
@@ -124,15 +146,19 @@ func batchEnqueue(c *client.Client, filePath string) error {
 
 	if output.Format == "json" {
 		var result any
-		json.Unmarshal(data, &result)
+		if err := json.Unmarshal(data, &result); err != nil {
+			return fmt.Errorf("parse response: %w", err)
+		}
 		return output.JSON(result)
 	}
 
 	var resp struct {
-		Enqueued int `json:"enqueued"`
-		Failed   int `json:"failed"`
+		Jobs  []any `json:"jobs"`
+		Count int   `json:"count"`
 	}
-	json.Unmarshal(data, &resp)
-	output.Success("Batch enqueue: %d enqueued, %d failed (from %d jobs)", resp.Enqueued, resp.Failed, len(jobs))
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return fmt.Errorf("parse response: %w", err)
+	}
+	output.Success("Batch enqueue: %d jobs enqueued (from %d submitted)", len(resp.Jobs), len(jobs))
 	return nil
 }

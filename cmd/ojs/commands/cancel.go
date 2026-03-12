@@ -22,12 +22,16 @@ func Cancel(c *client.Client, args []string) error {
 
 	if output.Format == "json" {
 		var result any
-		json.Unmarshal(data, &result)
+		if err := json.Unmarshal(data, &result); err != nil {
+			return fmt.Errorf("parse response: %w", err)
+		}
 		return output.JSON(result)
 	}
 
 	var job map[string]any
-	json.Unmarshal(data, &job)
+	if err := json.Unmarshal(data, &job); err != nil {
+		return fmt.Errorf("parse response: %w", err)
+	}
 	output.Success("Job %s cancelled (state=%s)", jobID, job["state"])
 	return nil
 }
