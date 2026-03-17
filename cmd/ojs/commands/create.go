@@ -106,10 +106,16 @@ func CreateProject(args []string) error {
 		fullPath := filepath.Join(outputDir, f.Path)
 		dir := filepath.Dir(fullPath)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("creating directory %s: %w", dir, err)
+			if created > 0 {
+				fmt.Fprintf(os.Stderr, "⚠️  Partial project created (%d/%d files). Clean up with: rm -rf %s\n", created, len(files), outputDir)
+			}
+			return fmt.Errorf("creating directory %s: %w\n\nHint: check directory permissions and available disk space", dir, err)
 		}
 		if err := os.WriteFile(fullPath, []byte(f.Content), 0o644); err != nil {
-			return fmt.Errorf("writing %s: %w", fullPath, err)
+			if created > 0 {
+				fmt.Fprintf(os.Stderr, "⚠️  Partial project created (%d/%d files). Clean up with: rm -rf %s\n", created, len(files), outputDir)
+			}
+			return fmt.Errorf("writing %s: %w\n\nHint: check available disk space and file permissions", fullPath, err)
 		}
 		created++
 	}

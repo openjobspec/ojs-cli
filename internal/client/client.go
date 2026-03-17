@@ -61,7 +61,7 @@ func (c *Client) do(method, path string, body any) ([]byte, int, error) {
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("request failed: %w", err)
+		return nil, 0, fmt.Errorf("request to %s failed: %w\n\nHint: verify the server is running and OJS_URL is correct (current: %s)", url, err, c.cfg.ServerURL)
 	}
 	defer resp.Body.Close()
 
@@ -73,6 +73,10 @@ func (c *Client) do(method, path string, body any) ([]byte, int, error) {
 	if resp.StatusCode >= 400 {
 		var errResp ErrorResponse
 		if json.Unmarshal(data, &errResp) == nil && errResp.Error.Code != "" {
+			hint := errorHint(resp.StatusCode)
+			if hint != "" {
+				return data, resp.StatusCode, fmt.Errorf("%s: %s\n\nHint: %s", errResp.Error.Code, errResp.Error.Message, hint)
+			}
 			return data, resp.StatusCode, fmt.Errorf("%s: %s", errResp.Error.Code, errResp.Error.Message)
 		}
 		return data, resp.StatusCode, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(data))
@@ -109,5 +113,25 @@ func (c *Client) Patch(path string, body any) ([]byte, int, error) {
 // Put performs a PUT request with a JSON body.
 func (c *Client) Put(path string, body any) ([]byte, int, error) {
 	return c.do(http.MethodPut, path, body)
+}
+
+// errorHint returns a user-friendly suggestion for common HTTP error codes.
+func errorHint(statusCode int) string {
+	switch statusCode {
+	case http.StatusUnauthorized:
+		return "check your auth token with 'ojs config show' or set OJS_AUTH_TOKEN"
+	case http.StatusForbidden:
+		return "your credentials lack permission for this operation"
+	case http.StatusNotFound:
+		return "the resource was not found; verify the job ID, queue name, or endpoint path"
+	case http.StatusConflict:
+		return "a conflicting operation is in progress (e.g., unique job constraint or invalid state transition)"
+	case http.StatusTooManyRequests:
+		return "rate limit exceeded; retry after a brief delay"
+	case http.StatusServiceUnavailable:
+		return "the server is temporarily unavailable; it may be starting up or overloaded"
+	default:
+		return ""
+	}
 }
 
