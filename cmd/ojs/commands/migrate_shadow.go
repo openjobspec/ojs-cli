@@ -94,7 +94,7 @@ Examples:
 	var stats shadowStats
 
 	fmt.Printf("Shadowing %s jobs to OJS at %s...\n", *source, target)
-	fmt.Println("Press Ctrl+C to stop early.\n")
+	fmt.Println("Press Ctrl+C to stop early.")
 
 	// Poll source system and mirror jobs to OJS
 	ticker := time.NewTicker(1 * time.Second)
