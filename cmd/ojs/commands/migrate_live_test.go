@@ -109,7 +109,7 @@ func TestHandleJobRoutedToOJS(t *testing.T) {
 	}
 }
 
-func TestHandleJobRoutedToLegacy(t *testing.T) {
+func TestHandleJobLegacyRouteFailsInsteadOfClaimingSuccess(t *testing.T) {
 	session, _ := migration.NewSession("test", migration.SourceSidekiq)
 	session.StartDualRun(0) // 0% to OJS = all legacy
 
@@ -124,8 +124,8 @@ func TestHandleJobRoutedToLegacy(t *testing.T) {
 	w := httptest.NewRecorder()
 	proxy.HandleJob(w, req)
 
-	if w.Code != 200 {
-		t.Errorf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusNotImplemented {
+		t.Errorf("expected 501, got %d", w.Code)
 	}
 	var resp map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &resp)
