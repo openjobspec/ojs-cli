@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/openjobspec/ojs-cli/internal/migrate"
 )
@@ -66,6 +67,34 @@ func TestParseSidekiqJob_DefaultQueue(t *testing.T) {
 	}
 }
 
+func TestParseSidekiqJob_ScheduledAtRFC3339(t *testing.T) {
+	tests := []struct {
+		name string
+		at   string
+		want string
+	}{
+		{name: "milliseconds", at: "1893456000.001", want: "2030-01-01T00:00:00.001Z"},
+		{name: "trailing zero fraction", at: "1893456000.900", want: "2030-01-01T00:00:00.9Z"},
+		{name: "whole seconds", at: "1893456000", want: "2030-01-01T00:00:00Z"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := `{"class":"DelayedJob","args":[],"queue":"default","jid":"sched1","at":` + tt.at + `}`
+			job, err := migrate.ParseSidekiqJob(raw)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if _, err := time.Parse(time.RFC3339Nano, job.ScheduledAt); err != nil {
+				t.Fatalf("scheduled_at = %q is not RFC3339: %v", job.ScheduledAt, err)
+			}
+			if job.ScheduledAt != tt.want {
+				t.Errorf("scheduled_at = %q, want %q", job.ScheduledAt, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseBullMQJob(t *testing.T) {
 	raw := `{"name":"email.send","data":{"to":"user@example.com"},"opts":{"priority":5}}`
 
@@ -99,7 +128,7 @@ func TestParseBullMQJob(t *testing.T) {
 	}
 }
 
-func TestParseBullMQJob_WithDelay(t *testing.T) {
+func TestParseBullMQJob_ReadyJobDoesNotReapplyDelay(t *testing.T) {
 	raw := `{"name":"delayed.task","data":{},"opts":{"delay":5000}}`
 
 	job, err := migrate.ParseBullMQJob("default", raw)
@@ -107,8 +136,8 @@ func TestParseBullMQJob_WithDelay(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if job.ScheduledAt == "" {
-		t.Error("expected scheduled_at to be set for delayed job")
+	if job.ScheduledAt != "" {
+		t.Errorf("scheduled_at = %q, want empty for a ready wait job", job.ScheduledAt)
 	}
 }
 
@@ -353,4 +382,3 @@ func TestSidekiqToOJSConversion(t *testing.T) {
 		t.Errorf("queue = %v, want reports", result["queue"])
 	}
 }
-
