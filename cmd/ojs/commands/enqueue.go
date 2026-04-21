@@ -17,83 +17,112 @@ var (
 	queuePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9\-\.]*$`)
 )
 
+type enqueueOptions struct {
+	jobType      string
+	queue        string
+	priority     int
+	argsJSON     string
+	metaJSON     string
+	maxAttempts  int
+	uniqueKey    string
+	uniqueWithin string
+	batchFile    string
+}
+
 // Enqueue creates a new job.
 func Enqueue(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("enqueue", flag.ExitOnError)
-	jobType := fs.String("type", "", "Job type (required)")
-	queue := fs.String("queue", "default", "Target queue")
-	priority := fs.Int("priority", 0, "Job priority (0-10)")
-	argsJSON := fs.String("args", "[]", "Job args as JSON array")
-	metaJSON := fs.String("meta", "", "Job metadata as JSON object")
-	maxAttempts := fs.Int("max-attempts", 0, "Max retry attempts")
-	uniqueKey := fs.String("unique-key", "", "Unique job key for deduplication")
-	uniqueWithin := fs.String("unique-within", "", "Uniqueness window (e.g. 1h, 30m)")
-	batchFile := fs.String("batch", "", "NDJSON file for bulk enqueue")
-	fs.Parse(args)
-
-	if *batchFile != "" {
-		return batchEnqueue(c, *batchFile)
+	options, err := parseEnqueueOptions(args)
+	if err != nil {
+		return err
+	}
+	if options.batchFile != "" {
+		return batchEnqueue(c, options.batchFile)
+	}
+	if err := validateEnqueueOptions(options); err != nil {
+		return err
 	}
 
-	if *jobType == "" {
+	body, err := buildEnqueueBody(options)
+	if err != nil {
+		return err
+	}
+	data, _, err := c.Post("/jobs", body)
+	if err != nil {
+		return err
+	}
+	return renderEnqueueResponse(data)
+}
+
+func parseEnqueueOptions(args []string) (*enqueueOptions, error) {
+	options := &enqueueOptions{}
+	fs := flag.NewFlagSet("enqueue", flag.ContinueOnError)
+	fs.StringVar(&options.jobType, "type", "", "Job type (required)")
+	fs.StringVar(&options.queue, "queue", "default", "Target queue")
+	fs.IntVar(&options.priority, "priority", 0, "Job priority (0-10)")
+	fs.StringVar(&options.argsJSON, "args", "[]", "Job args as JSON array")
+	fs.StringVar(&options.metaJSON, "meta", "", "Job metadata as JSON object")
+	fs.IntVar(&options.maxAttempts, "max-attempts", 0, "Max retry attempts")
+	fs.StringVar(&options.uniqueKey, "unique-key", "", "Unique job key for deduplication")
+	fs.StringVar(&options.uniqueWithin, "unique-within", "", "Uniqueness window (e.g. 1h, 30m)")
+	fs.StringVar(&options.batchFile, "batch", "", "NDJSON file for bulk enqueue")
+	if err := fs.Parse(args); err != nil {
+		return nil, fmt.Errorf("parse flags: %w", err)
+	}
+	return options, nil
+}
+
+func validateEnqueueOptions(options *enqueueOptions) error {
+	switch {
+	case options.jobType == "":
 		return fmt.Errorf("--type is required\n\nUsage: ojs enqueue --type <type> [--queue <queue>] [--args '<json>']")
-	}
-	if len(*jobType) > 255 {
+	case len(options.jobType) > 255:
 		return fmt.Errorf("--type must not exceed 255 characters")
-	}
-	if !typePattern.MatchString(*jobType) {
-		return fmt.Errorf("invalid --type %q: must match ^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$", *jobType)
-	}
-	if len(*queue) > 128 {
+	case !typePattern.MatchString(options.jobType):
+		return fmt.Errorf("invalid --type %q: must match ^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$", options.jobType)
+	case len(options.queue) > 128:
 		return fmt.Errorf("--queue must not exceed 128 characters")
+	case !queuePattern.MatchString(options.queue):
+		return fmt.Errorf("invalid --queue %q: must match ^[a-z0-9][a-z0-9\\-.]*$", options.queue)
+	default:
+		return nil
 	}
-	if !queuePattern.MatchString(*queue) {
-		return fmt.Errorf("invalid --queue %q: must match ^[a-z0-9][a-z0-9\\-.]*$", *queue)
-	}
+}
 
-	body := map[string]any{
-		"type": *jobType,
-	}
-
+func buildEnqueueBody(options *enqueueOptions) (map[string]any, error) {
+	body := map[string]any{"type": options.jobType}
 	var jobArgs json.RawMessage
-	if err := json.Unmarshal([]byte(*argsJSON), &jobArgs); err != nil {
-		return fmt.Errorf("invalid --args JSON: %w", err)
+	if err := json.Unmarshal([]byte(options.argsJSON), &jobArgs); err != nil {
+		return nil, fmt.Errorf("invalid --args JSON: %w", err)
 	}
 	body["args"] = jobArgs
 
-	opts := map[string]any{
-		"queue": *queue,
+	opts := map[string]any{"queue": options.queue}
+	if options.priority > 0 {
+		opts["priority"] = options.priority
 	}
-	if *priority > 0 {
-		opts["priority"] = *priority
+	if options.maxAttempts > 0 {
+		opts["max_attempts"] = options.maxAttempts
 	}
-	if *maxAttempts > 0 {
-		opts["max_attempts"] = *maxAttempts
-	}
-	if *uniqueKey != "" {
-		unique := map[string]any{
-			"key": *uniqueKey,
-		}
-		if *uniqueWithin != "" {
-			unique["within"] = *uniqueWithin
+	if options.uniqueKey != "" {
+		unique := map[string]any{"key": options.uniqueKey}
+		if options.uniqueWithin != "" {
+			unique["within"] = options.uniqueWithin
 		}
 		opts["unique"] = unique
 	}
 	body["options"] = opts
 
-	if *metaJSON != "" {
+	if options.metaJSON != "" {
 		var meta json.RawMessage
-		if err := json.Unmarshal([]byte(*metaJSON), &meta); err != nil {
-			return fmt.Errorf("invalid --meta JSON: %w", err)
+		if err := json.Unmarshal([]byte(options.metaJSON), &meta); err != nil {
+			return nil, fmt.Errorf("invalid --meta JSON: %w", err)
 		}
 		body["meta"] = meta
 	}
+	return body, nil
+}
 
-	data, _, err := c.Post("/jobs", body)
-	if err != nil {
-		return err
-	}
-
+func renderEnqueueResponse(data []byte) error {
 	if output.Format == "json" {
 		var result any
 		if err := json.Unmarshal(data, &result); err != nil {
