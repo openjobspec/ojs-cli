@@ -5,12 +5,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/openjobspec/ojs-cli/internal/migrate"
+	"github.com/openjobspec/ojs-cli/internal/redact"
 )
 
 // Phase represents the current migration phase.
@@ -22,8 +26,11 @@ const (
 	PhaseImporting Phase = "importing"
 	PhaseVerifying Phase = "verifying"
 	PhaseComplete  Phase = "complete"
+	PhasePartial   Phase = "partial"
 	PhaseFailed    Phase = "failed"
 )
+
+const maxMigrationResponseBytes = 8 << 20
 
 // Config configures a live migration.
 type Config struct {
@@ -37,13 +44,14 @@ type Config struct {
 
 // Stats tracks migration progress.
 type Stats struct {
-	Phase        Phase     `json:"phase"`
-	Exported     atomic.Int64
-	Imported     atomic.Int64
-	Verified     atomic.Int64
-	Errors       atomic.Int64
-	StartedAt    time.Time  `json:"started_at"`
-	CompletedAt  *time.Time `json:"completed_at,omitempty"`
+	Phase       Phase `json:"phase"`
+	Exported    atomic.Int64
+	Imported    atomic.Int64
+	Verified    atomic.Int64
+	Errors      atomic.Int64
+	StartedAt   time.Time               `json:"started_at"`
+	CompletedAt *time.Time              `json:"completed_at,omitempty"`
+	Failures    []migrate.FailureDetail `json:"failures,omitempty"`
 }
 
 // Snapshot returns a serializable copy.
@@ -56,35 +64,41 @@ func (s *Stats) Snapshot() StatsSnapshot {
 		Errors:      s.Errors.Load(),
 		StartedAt:   s.StartedAt,
 		CompletedAt: s.CompletedAt,
+		Failures:    append([]migrate.FailureDetail(nil), s.Failures...),
 	}
 }
 
 // StatsSnapshot is a serializable stats copy.
 type StatsSnapshot struct {
-	Phase       Phase      `json:"phase"`
-	Exported    int64      `json:"exported"`
-	Imported    int64      `json:"imported"`
-	Verified    int64      `json:"verified"`
-	Errors      int64      `json:"errors"`
-	StartedAt   time.Time  `json:"started_at"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	Phase       Phase                   `json:"phase"`
+	Exported    int64                   `json:"exported"`
+	Imported    int64                   `json:"imported"`
+	Verified    int64                   `json:"verified"`
+	Errors      int64                   `json:"errors"`
+	StartedAt   time.Time               `json:"started_at"`
+	CompletedAt *time.Time              `json:"completed_at,omitempty"`
+	Failures    []migrate.FailureDetail `json:"failures,omitempty"`
 }
 
 // Migration manages the backend-to-backend migration lifecycle.
 type Migration struct {
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	config Config
 	stats  Stats
 	client *http.Client
 }
 
 // New creates a new live migration.
-func New(cfg Config) *Migration {
-	if cfg.BatchSize <= 0 {
-		cfg.BatchSize = 100
+func New(cfg *Config) *Migration {
+	if cfg == nil {
+		cfg = &Config{}
+	}
+	configCopy := *cfg
+	if configCopy.BatchSize <= 0 {
+		configCopy.BatchSize = 100
 	}
 	return &Migration{
-		config: cfg,
+		config: configCopy,
 		client: &http.Client{Timeout: 30 * time.Second},
 		stats:  Stats{Phase: PhaseIdle},
 	}
@@ -92,6 +106,8 @@ func New(cfg Config) *Migration {
 
 // GetStats returns current migration progress.
 func (m *Migration) GetStats() StatsSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.stats.Snapshot()
 }
 
@@ -99,34 +115,50 @@ func (m *Migration) GetStats() StatsSnapshot {
 func (m *Migration) Run(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.stats.Exported.Store(0)
+	m.stats.Imported.Store(0)
+	m.stats.Verified.Store(0)
+	m.stats.Errors.Store(0)
+	m.stats.Failures = nil
+	m.stats.CompletedAt = nil
 	m.stats.StartedAt = time.Now()
 
 	// Phase 1: Export
 	m.stats.Phase = PhaseExporting
 	jobs, err := m.exportJobs(ctx)
 	if err != nil {
-		m.stats.Phase = PhaseFailed
+		m.finish(PhaseFailed)
 		return fmt.Errorf("export failed: %w", err)
 	}
 
 	// Phase 2: Import
 	m.stats.Phase = PhaseImporting
 	if err := m.importJobs(ctx, jobs); err != nil {
-		m.stats.Phase = PhaseFailed
+		var partial *migrate.PartialFailureError
+		if errors.As(err, &partial) {
+			m.stats.Failures = append([]migrate.FailureDetail(nil), partial.Details...)
+			m.finish(PhasePartial)
+		} else {
+			m.finish(PhaseFailed)
+		}
 		return fmt.Errorf("import failed: %w", err)
 	}
 
 	// Phase 3: Verify
 	m.stats.Phase = PhaseVerifying
 	if err := m.verifyTarget(ctx); err != nil {
-		m.stats.Phase = PhaseFailed
+		m.finish(PhaseFailed)
 		return fmt.Errorf("verify failed: %w", err)
 	}
 
-	m.stats.Phase = PhaseComplete
+	m.finish(PhaseComplete)
+	return nil
+}
+
+func (m *Migration) finish(phase Phase) {
+	m.stats.Phase = phase
 	now := time.Now()
 	m.stats.CompletedAt = &now
-	return nil
 }
 
 func (m *Migration) exportJobs(ctx context.Context) ([]json.RawMessage, error) {
@@ -147,7 +179,8 @@ func (m *Migration) exportJobs(ctx context.Context) ([]json.RawMessage, error) {
 }
 
 func (m *Migration) importJobs(ctx context.Context, jobs []json.RawMessage) error {
-	for _, raw := range jobs {
+	failures := make([]migrate.FailureDetail, 0)
+	for i, raw := range jobs {
 		if m.config.DryRun {
 			m.stats.Imported.Add(1)
 			continue
@@ -156,6 +189,10 @@ func (m *Migration) importJobs(ctx context.Context, jobs []json.RawMessage) erro
 		var job map[string]interface{}
 		if err := json.Unmarshal(raw, &job); err != nil {
 			m.stats.Errors.Add(1)
+			failures = append(failures, migrate.FailureDetail{
+				Index: i + 1,
+				Error: fmt.Sprintf("decode exported job: %v", err),
+			})
 			continue
 		}
 
@@ -168,12 +205,34 @@ func (m *Migration) importJobs(ctx context.Context, jobs []json.RawMessage) erro
 			req["meta"] = meta
 		}
 
-		body, _ := json.Marshal(req)
+		body, err := json.Marshal(req)
+		if err != nil {
+			m.stats.Errors.Add(1)
+			failures = append(failures, migrate.FailureDetail{
+				Index: i + 1,
+				Type:  fmt.Sprint(job["type"]),
+				Error: fmt.Sprintf("encode target request: %v", err),
+			})
+			continue
+		}
 		if _, err := m.request(ctx, "POST", m.config.TargetURL+"/ojs/v1/jobs", m.config.TargetKey, body); err != nil {
 			m.stats.Errors.Add(1)
+			failures = append(failures, migrate.FailureDetail{
+				Index: i + 1,
+				Type:  fmt.Sprint(job["type"]),
+				Error: err.Error(),
+			})
 			continue
 		}
 		m.stats.Imported.Add(1)
+	}
+	if len(failures) > 0 {
+		return &migrate.PartialFailureError{
+			Operation: "live migration import",
+			Total:     len(jobs),
+			Failed:    len(failures),
+			Details:   failures,
+		}
 	}
 	return nil
 }
@@ -204,11 +263,17 @@ func (m *Migration) request(ctx context.Context, method, url, apiKey string, bod
 
 	resp, err := m.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("request %s: %w", redact.URL(url), err)
 	}
 	defer resp.Body.Close()
 
-	data, _ := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxMigrationResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read response from %s: %w", redact.URL(url), err)
+	}
+	if len(data) > maxMigrationResponseBytes {
+		return nil, fmt.Errorf("response from %s exceeds %d bytes", redact.URL(url), maxMigrationResponseBytes)
+	}
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(data))
 	}
