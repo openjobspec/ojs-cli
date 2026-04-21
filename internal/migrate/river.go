@@ -1,12 +1,14 @@
 package migrate
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
+	"github.com/openjobspec/ojs-cli/internal/redact"
 	"github.com/redis/go-redis/v9"
-	"golang.org/x/net/context"
 )
 
 // RiverSource reads jobs from a River queue backed by PostgreSQL (via its Redis-based UI API)
@@ -23,7 +25,7 @@ type RiverSource struct {
 func NewRiverSource(redisURL string) (*RiverSource, error) {
 	opts, err := redis.ParseURL(redisURL)
 	if err != nil {
-		return nil, fmt.Errorf("invalid redis URL: %w", err)
+		return nil, fmt.Errorf("invalid redis URL %q: %w", redact.URL(redisURL), err)
 	}
 	return &RiverSource{rdb: redis.NewClient(opts), url: redisURL}, nil
 }
@@ -35,14 +37,14 @@ func (r *RiverSource) Close() error {
 
 // riverJob represents a River job as stored in its PostgreSQL-backed data.
 type riverJob struct {
-	ID        int64           `json:"id"`
-	Kind      string          `json:"kind"`
-	Args      json.RawMessage `json:"args"`
-	Queue     string          `json:"queue"`
-	State     string          `json:"state"`
-	Priority  int             `json:"priority"`
-	ScheduledAt string        `json:"scheduled_at,omitempty"`
-	Metadata  json.RawMessage `json:"metadata,omitempty"`
+	ID          int64           `json:"id"`
+	Kind        string          `json:"kind"`
+	Args        json.RawMessage `json:"args"`
+	Queue       string          `json:"queue"`
+	State       string          `json:"state"`
+	Priority    int             `json:"priority"`
+	ScheduledAt string          `json:"scheduled_at,omitempty"`
+	Metadata    json.RawMessage `json:"metadata,omitempty"`
 }
 
 func (r *RiverSource) Analyze() (*AnalysisResult, error) {
@@ -58,16 +60,22 @@ func (r *RiverSource) Analyze() (*AnalysisResult, error) {
 	for {
 		keys, next, err := r.rdb.Scan(ctx, cursor, "river:queue:*", 10).Result()
 		if err != nil {
-			break
+			return nil, fmt.Errorf("scan River queues: %w", err)
 		}
 		for _, key := range keys {
 			qName := key[len("river:queue:"):]
-			count, _ := r.rdb.LLen(ctx, key).Result()
+			count, err := r.rdb.LLen(ctx, key).Result()
+			if err != nil {
+				return nil, fmt.Errorf("count River queue %s: %w", qName, err)
+			}
 			queueCounts[qName] = int(count)
 			jobTypes[qName] = make(map[string]int)
 
 			// Sample first 100 jobs for type discovery
-			jobs, _ := r.rdb.LRange(ctx, key, 0, 99).Result()
+			jobs, err := r.rdb.LRange(ctx, key, 0, 99).Result()
+			if err != nil {
+				return nil, fmt.Errorf("sample River queue %s: %w", qName, err)
+			}
 			for _, raw := range jobs {
 				var rj riverJob
 				if json.Unmarshal([]byte(raw), &rj) == nil {
@@ -83,10 +91,16 @@ func (r *RiverSource) Analyze() (*AnalysisResult, error) {
 
 	result := &AnalysisResult{
 		Source:     "river",
-		Connection: r.url,
+		Connection: redact.URL(r.url),
 	}
 
-	for name, count := range queueCounts {
+	queueNames := make([]string, 0, len(queueCounts))
+	for name := range queueCounts {
+		queueNames = append(queueNames, name)
+	}
+	sort.Strings(queueNames)
+	for _, name := range queueNames {
+		count := queueCounts[name]
 		qa := QueueAnalysis{
 			Name:        name,
 			PendingJobs: count,
@@ -105,23 +119,29 @@ func (r *RiverSource) Export() ([]ExportedJob, error) {
 	defer cancel()
 
 	var exported []ExportedJob
+	var failures []FailedRecord
 
 	var cursor uint64
 	for {
 		keys, next, err := r.rdb.Scan(ctx, cursor, "river:queue:*", 10).Result()
 		if err != nil {
-			break
+			return nil, fmt.Errorf("scan River queues: %w", err)
 		}
 		for _, key := range keys {
 			qName := key[len("river:queue:"):]
 			jobs, err := r.rdb.LRange(ctx, key, 0, -1).Result()
 			if err != nil {
-				continue
+				return nil, fmt.Errorf("read River queue %s: %w", qName, err)
 			}
-			for _, raw := range jobs {
-				if ej, err := parseRiverJob(qName, raw); err == nil {
-					exported = append(exported, *ej)
+			for i, raw := range jobs {
+				job, parseErr := parseRiverJob(qName, raw)
+				if parseErr != nil {
+					failures = append(failures, FailedRecord{
+						Source: "river", Queue: qName, Structure: "list", Index: i + 1, Error: parseErr.Error(),
+					})
+					continue
 				}
+				exported = append(exported, *job)
 			}
 		}
 		cursor = next
@@ -130,6 +150,9 @@ func (r *RiverSource) Export() ([]ExportedJob, error) {
 		}
 	}
 
+	if len(failures) > 0 {
+		return exported, &PartialExportError{Exported: len(exported), Failures: failures}
+	}
 	return exported, nil
 }
 
@@ -160,7 +183,11 @@ func parseRiverJob(queue, raw string) (*ExportedJob, error) {
 
 	// River args are a JSON object; wrap in array for OJS compatibility
 	if rj.Args != nil {
-		ej.Args = wrapInArray(rj.Args)
+		args, err := wrapInArray(rj.Args)
+		if err != nil {
+			return nil, fmt.Errorf("invalid River args: %w", err)
+		}
+		ej.Args = args
 	} else {
 		ej.Args = json.RawMessage("[]")
 	}

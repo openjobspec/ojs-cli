@@ -1,13 +1,22 @@
 package migrate
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/openjobspec/ojs-cli/internal/redact"
 	"github.com/redis/go-redis/v9"
-	"golang.org/x/net/context"
+)
+
+const (
+	bullMQDelayedScoreFactor = 0x1000
+	maxUnixMilli             = 253402300799000 // 9999-12-31T23:59:59Z
 )
 
 // BullMQSource reads jobs from a BullMQ-managed Redis instance.
@@ -20,7 +29,7 @@ type BullMQSource struct {
 func NewBullMQSource(redisURL string) (*BullMQSource, error) {
 	opts, err := redis.ParseURL(redisURL)
 	if err != nil {
-		return nil, fmt.Errorf("invalid redis URL: %w", err)
+		return nil, fmt.Errorf("invalid redis URL %q: %w", redact.URL(redisURL), err)
 	}
 	return &BullMQSource{rdb: redis.NewClient(opts), url: redisURL}, nil
 }
@@ -30,15 +39,15 @@ func (b *BullMQSource) Close() error {
 	return b.rdb.Close()
 }
 
-type bullMQJobData struct {
-	Name string          `json:"name"`
-	Data json.RawMessage `json:"data"`
-	Opts bullMQOpts      `json:"opts"`
-}
-
 type bullMQOpts struct {
 	Delay    int64 `json:"delay,omitempty"`
 	Priority int   `json:"priority,omitempty"`
+}
+
+type bullMQRecord struct {
+	ID        string
+	Structure string
+	Score     float64
 }
 
 func (b *BullMQSource) Analyze() (*AnalysisResult, error) {
@@ -52,15 +61,14 @@ func (b *BullMQSource) Analyze() (*AnalysisResult, error) {
 
 	result := &AnalysisResult{
 		Source:     "bullmq",
-		Connection: b.url,
+		Connection: redact.URL(b.url),
 	}
-
-	for _, q := range queueNames {
-		qa, count, err := b.analyzeQueue(ctx, q)
+	for _, queue := range queueNames {
+		analysis, count, err := b.analyzeQueue(ctx, queue)
 		if err != nil {
 			return nil, err
 		}
-		result.Queues = append(result.Queues, *qa)
+		result.Queues = append(result.Queues, *analysis)
 		result.TotalJobs += count
 	}
 
@@ -69,86 +77,67 @@ func (b *BullMQSource) Analyze() (*AnalysisResult, error) {
 }
 
 func (b *BullMQSource) discoverQueues(ctx context.Context) ([]string, error) {
-	seen := make(map[string]bool)
-	var cursor uint64
-
-	for {
-		keys, next, err := b.rdb.Scan(ctx, cursor, "bull:*:id", 10).Result()
-		if err != nil {
-			return nil, fmt.Errorf("scan for bull queues: %w", err)
-		}
-		for _, key := range keys {
-			// bull:<queue>:id → extract queue name
-			parts := strings.SplitN(key, ":", 3)
-			if len(parts) >= 2 {
-				seen[parts[1]] = true
+	seen := make(map[string]struct{})
+	for _, suffix := range []string{"id", "wait", "delayed"} {
+		var cursor uint64
+		for {
+			keys, next, err := b.rdb.Scan(ctx, cursor, "bull:*:"+suffix, 10).Result()
+			if err != nil {
+				return nil, fmt.Errorf("scan for BullMQ %s keys: %w", suffix, err)
 			}
-		}
-		cursor = next
-		if cursor == 0 {
-			break
-		}
-	}
-
-	// Also scan for wait lists as a fallback
-	cursor = 0
-	for {
-		keys, next, err := b.rdb.Scan(ctx, cursor, "bull:*:wait", 10).Result()
-		if err != nil {
-			break
-		}
-		for _, key := range keys {
-			parts := strings.SplitN(key, ":", 3)
-			if len(parts) >= 2 {
-				seen[parts[1]] = true
+			for _, key := range keys {
+				if queue, ok := bullMQQueueFromKey(key, suffix); ok {
+					seen[queue] = struct{}{}
+				}
 			}
-		}
-		cursor = next
-		if cursor == 0 {
-			break
+			cursor = next
+			if cursor == 0 {
+				break
+			}
 		}
 	}
 
 	queues := make([]string, 0, len(seen))
-	for q := range seen {
-		queues = append(queues, q)
+	for queue := range seen {
+		queues = append(queues, queue)
 	}
+	sort.Strings(queues)
 	return queues, nil
 }
 
+func bullMQQueueFromKey(key, suffix string) (string, bool) {
+	const prefix = "bull:"
+	ending := ":" + suffix
+	if !strings.HasPrefix(key, prefix) || !strings.HasSuffix(key, ending) {
+		return "", false
+	}
+	queue := strings.TrimSuffix(strings.TrimPrefix(key, prefix), ending)
+	return queue, queue != ""
+}
+
 func (b *BullMQSource) analyzeQueue(ctx context.Context, name string) (*QueueAnalysis, int, error) {
-	// BullMQ stores waiting jobs in bull:<queue>:wait list, each entry is a job ID
-	waitKey := "bull:" + name + ":wait"
-	jobIDs, err := b.rdb.LRange(ctx, waitKey, 0, -1).Result()
+	records, err := b.queueRecords(ctx, name)
 	if err != nil {
-		return nil, 0, fmt.Errorf("read BullMQ wait list for %s: %w", name, err)
+		return nil, 0, err
 	}
 
-	qa := &QueueAnalysis{
+	analysis := &QueueAnalysis{
 		Name:        name,
-		PendingJobs: len(jobIDs),
+		PendingJobs: len(records),
 		JobTypes:    make(map[string]int),
 	}
-
-	for _, id := range jobIDs {
-		dataKey := "bull:" + name + ":" + id
-		data, err := b.rdb.HGet(ctx, dataKey, "data").Result()
+	for _, record := range records {
+		fields, err := b.rdb.HGetAll(ctx, bullMQJobKey(name, record.ID)).Result()
 		if err != nil {
-			continue
+			return nil, 0, fmt.Errorf("read BullMQ job %s/%s: %w", name, record.ID, err)
 		}
-		var job bullMQJobData
-		if json.Unmarshal([]byte(data), &job) == nil {
-			qa.JobTypes[job.Name]++
-		} else {
-			// data field might just be the data payload; try getting name separately
-			nameVal, err := b.rdb.HGet(ctx, dataKey, "name").Result()
-			if err == nil {
-				qa.JobTypes[nameVal]++
-			}
+		job, err := parseBullMQFields(name, record, fields)
+		if err != nil {
+			return nil, 0, fmt.Errorf("analyze BullMQ job %s/%s: %w", name, record.ID, err)
 		}
+		analysis.JobTypes[job.Type]++
 	}
-
-	return qa, len(jobIDs), nil
+	return analysis, len(records), nil
 }
 
 func (b *BullMQSource) Export() ([]ExportedJob, error) {
@@ -161,102 +150,217 @@ func (b *BullMQSource) Export() ([]ExportedJob, error) {
 	}
 
 	var exported []ExportedJob
-
-	for _, q := range queueNames {
-		waitKey := "bull:" + q + ":wait"
-		jobIDs, err := b.rdb.LRange(ctx, waitKey, 0, -1).Result()
+	var failures []FailedRecord
+	for _, queue := range queueNames {
+		records, err := b.queueRecords(ctx, queue)
 		if err != nil {
-			continue
+			return nil, err
 		}
-
-		for _, id := range jobIDs {
-			dataKey := "bull:" + q + ":" + id
-			fields, err := b.rdb.HGetAll(ctx, dataKey).Result()
+		for i, record := range records {
+			fields, err := b.rdb.HGetAll(ctx, bullMQJobKey(queue, record.ID)).Result()
 			if err != nil {
+				return nil, fmt.Errorf("read BullMQ job %s/%s: %w", queue, record.ID, err)
+			}
+			job, parseErr := parseBullMQFields(queue, record, fields)
+			if parseErr != nil {
+				failures = append(failures, FailedRecord{
+					Source: "bullmq", Queue: queue, Structure: record.Structure,
+					ID: record.ID, Index: i + 1, Error: parseErr.Error(),
+				})
 				continue
 			}
-			if ej, err := parseBullMQJob(q, fields); err == nil {
-				exported = append(exported, *ej)
-			}
+			exported = append(exported, *job)
 		}
 	}
 
+	if len(failures) > 0 {
+		return exported, &PartialExportError{Exported: len(exported), Failures: failures}
+	}
 	return exported, nil
 }
 
-// ParseBullMQJob converts BullMQ hash fields into an ExportedJob.
-// Exported for testing.
-func ParseBullMQJob(queue string, raw string) (*ExportedJob, error) {
-	var job bullMQJobData
-	if err := json.Unmarshal([]byte(raw), &job); err != nil {
+func (b *BullMQSource) queueRecords(ctx context.Context, queue string) ([]bullMQRecord, error) {
+	delayed, err := b.rdb.ZRangeWithScores(ctx, "bull:"+queue+":delayed", 0, -1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("read BullMQ delayed set for %s: %w", queue, err)
+	}
+	waiting, err := b.rdb.LRange(ctx, "bull:"+queue+":wait", 0, -1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("read BullMQ wait list for %s: %w", queue, err)
+	}
+
+	records := make([]bullMQRecord, 0, len(delayed)+len(waiting))
+	seen := make(map[string]struct{}, len(delayed)+len(waiting))
+	for _, entry := range delayed {
+		id, err := redisMemberString(entry.Member)
+		if err != nil {
+			return nil, fmt.Errorf("read BullMQ delayed member for %s: %w", queue, err)
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		records = append(records, bullMQRecord{ID: id, Structure: "delayed", Score: entry.Score})
+	}
+	for _, id := range waiting {
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		records = append(records, bullMQRecord{ID: id, Structure: "wait"})
+	}
+	return records, nil
+}
+
+func bullMQJobKey(queue, id string) string {
+	return "bull:" + queue + ":" + id
+}
+
+// ParseBullMQJob converts a serialized BullMQ job snapshot into an ExportedJob.
+// A standalone snapshot is treated as a ready/waiting job; opts.delay is
+// retained in metadata but never re-applied at migration time.
+func ParseBullMQJob(queue, raw string) (*ExportedJob, error) {
+	var snapshot struct {
+		ID        string          `json:"id"`
+		Name      string          `json:"name"`
+		Data      json.RawMessage `json:"data"`
+		Opts      json.RawMessage `json:"opts"`
+		Timestamp json.Number     `json:"timestamp"`
+		Delay     json.Number     `json:"delay"`
+		Priority  json.Number     `json:"priority"`
+	}
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
 		return nil, fmt.Errorf("parse bullmq job: %w", err)
 	}
 
-	ej := &ExportedJob{
-		Type:  job.Name,
-		Queue: queue,
-		Args:  wrapInArray(job.Data),
-		Meta: map[string]any{
-			"bullmq_source": true,
-		},
+	fields := map[string]string{
+		"name": snapshot.Name,
+		"data": string(snapshot.Data),
+		"opts": string(snapshot.Opts),
 	}
-
-	if job.Opts.Priority > 0 {
-		p := job.Opts.Priority
-		ej.Priority = &p
+	if snapshot.Timestamp != "" {
+		fields["timestamp"] = snapshot.Timestamp.String()
 	}
-
-	if job.Opts.Delay > 0 {
-		scheduled := time.Now().Add(time.Duration(job.Opts.Delay) * time.Millisecond)
-		ej.ScheduledAt = scheduled.UTC().Format(time.RFC3339)
+	if snapshot.Delay != "" {
+		fields["delay"] = snapshot.Delay.String()
 	}
-
-	return ej, nil
+	if snapshot.Priority != "" {
+		fields["priority"] = snapshot.Priority.String()
+	}
+	return parseBullMQFields(queue, bullMQRecord{ID: snapshot.ID, Structure: "wait"}, fields)
 }
 
-func parseBullMQJob(queue string, fields map[string]string) (*ExportedJob, error) {
+func parseBullMQFields(queue string, record bullMQRecord, fields map[string]string) (*ExportedJob, error) {
 	name := fields["name"]
 	if name == "" {
 		return nil, fmt.Errorf("missing job name")
 	}
 
-	ej := &ExportedJob{
-		Type:  name,
-		Queue: queue,
-		Meta: map[string]any{
-			"bullmq_source": true,
-		},
+	args, err := wrapInArray(json.RawMessage(fields["data"]))
+	if err != nil {
+		return nil, fmt.Errorf("invalid job data: %w", err)
 	}
 
-	if data, ok := fields["data"]; ok {
-		ej.Args = wrapInArray(json.RawMessage(data))
-	} else {
-		ej.Args = json.RawMessage("[]")
-	}
-
-	if opts, ok := fields["opts"]; ok {
-		var o bullMQOpts
-		if json.Unmarshal([]byte(opts), &o) == nil {
-			if o.Priority > 0 {
-				p := o.Priority
-				ej.Priority = &p
-			}
-			if o.Delay > 0 {
-				scheduled := time.Now().Add(time.Duration(o.Delay) * time.Millisecond)
-				ej.ScheduledAt = scheduled.UTC().Format(time.RFC3339)
-			}
+	opts := bullMQOpts{}
+	optsMeta := map[string]any{}
+	if rawOpts := fields["opts"]; rawOpts != "" {
+		if err := json.Unmarshal([]byte(rawOpts), &opts); err != nil {
+			return nil, fmt.Errorf("invalid job options: %w", err)
+		}
+		if err := json.Unmarshal([]byte(rawOpts), &optsMeta); err != nil {
+			return nil, fmt.Errorf("invalid job options metadata: %w", err)
 		}
 	}
 
-	return ej, nil
+	job := &ExportedJob{
+		Type:  name,
+		Queue: queue,
+		Args:  args,
+		Meta: map[string]any{
+			"bullmq_source":    true,
+			"bullmq_structure": record.Structure,
+		},
+	}
+	if record.ID != "" {
+		job.Meta["bullmq_id"] = record.ID
+	}
+	if len(optsMeta) > 0 {
+		job.Meta["bullmq_opts"] = optsMeta
+	}
+
+	priority := opts.Priority
+	if fields["priority"] != "" {
+		parsed, parseErr := strconv.Atoi(fields["priority"])
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid priority %q: %w", fields["priority"], parseErr)
+		}
+		priority = parsed
+	}
+	if priority > 0 {
+		job.Priority = &priority
+	}
+
+	if record.Structure == "delayed" {
+		targetMillis, err := bullMQTargetMillis(record.Score, fields, opts)
+		if err != nil {
+			return nil, err
+		}
+		job.ScheduledAt = time.UnixMilli(targetMillis).UTC().Format(time.RFC3339Nano)
+	}
+
+	return job, nil
 }
 
-// wrapInArray wraps a JSON value in an array if it isn't already one.
-func wrapInArray(data json.RawMessage) json.RawMessage {
-	trimmed := strings.TrimSpace(string(data))
-	if len(trimmed) > 0 && trimmed[0] == '[' {
-		return data
+func bullMQTargetMillis(score float64, fields map[string]string, opts bullMQOpts) (int64, error) {
+	var scoreMillis int64
+	if score > 0 {
+		if score > maxUnixMilli {
+			scoreMillis = int64(math.Floor(score / bullMQDelayedScoreFactor))
+		} else {
+			scoreMillis = int64(math.Floor(score))
+		}
 	}
-	wrapped, _ := json.Marshal([]json.RawMessage{data})
-	return wrapped
+
+	var storedMillis int64
+	if rawTimestamp := fields["timestamp"]; rawTimestamp != "" {
+		timestamp, err := strconv.ParseInt(rawTimestamp, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid BullMQ timestamp %q: %w", rawTimestamp, err)
+		}
+		delay := opts.Delay
+		if rawDelay := fields["delay"]; rawDelay != "" {
+			delay, err = strconv.ParseInt(rawDelay, 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("invalid BullMQ delay %q: %w", rawDelay, err)
+			}
+		}
+		storedMillis = timestamp + delay
+	}
+
+	switch {
+	case scoreMillis > 0:
+		return scoreMillis, nil
+	case storedMillis > 0:
+		return storedMillis, nil
+	default:
+		return 0, fmt.Errorf("delayed job is missing a valid delayed score or timestamp/delay")
+	}
+}
+
+func wrapInArray(data json.RawMessage) (json.RawMessage, error) {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return json.RawMessage("[]"), nil
+	}
+	if !json.Valid(data) {
+		return nil, fmt.Errorf("invalid JSON")
+	}
+	if trimmed[0] == '[' {
+		return data, nil
+	}
+	wrapped, err := json.Marshal([]json.RawMessage{data})
+	if err != nil {
+		return nil, fmt.Errorf("wrap job data: %w", err)
+	}
+	return wrapped, nil
 }
