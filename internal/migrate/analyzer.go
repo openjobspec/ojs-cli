@@ -39,11 +39,11 @@ type JobDefinition struct {
 
 // CodeAnalysisResult holds the output of source code analysis.
 type CodeAnalysisResult struct {
-	Framework    SourceFramework `json:"framework"`
-	Jobs         []JobDefinition `json:"jobs"`
-	Queues       []string        `json:"queues"`
-	TotalFiles   int             `json:"total_files"`
-	Warnings     []string        `json:"warnings,omitempty"`
+	Framework  SourceFramework `json:"framework"`
+	Jobs       []JobDefinition `json:"jobs"`
+	Queues     []string        `json:"queues"`
+	TotalFiles int             `json:"total_files"`
+	Warnings   []string        `json:"warnings,omitempty"`
 }
 
 // GeneratedCode holds OJS-equivalent code for a job definition.
@@ -57,10 +57,10 @@ type GeneratedCode struct {
 
 // MigrationPlan contains the full migration plan with diffs.
 type CodeMigrationPlan struct {
-	Framework  SourceFramework    `json:"framework"`
-	Analysis   CodeAnalysisResult `json:"analysis"`
-	Generated  []GeneratedCode    `json:"generated"`
-	Summary    string             `json:"summary"`
+	Framework SourceFramework    `json:"framework"`
+	Analysis  CodeAnalysisResult `json:"analysis"`
+	Generated []GeneratedCode    `json:"generated"`
+	Summary   string             `json:"summary"`
 }
 
 // AnalyzeSource analyzes source code content and extracts job definitions.
@@ -83,10 +83,10 @@ func AnalyzeSource(framework SourceFramework, files map[string]string) *CodeAnal
 			jobs = analyzeCeleryFile(content, path)
 		}
 
-		for _, job := range jobs {
-			result.Jobs = append(result.Jobs, job)
-			if job.Queue != "" {
-				queues[job.Queue] = true
+		result.Jobs = append(result.Jobs, jobs...)
+		for i := range jobs {
+			if jobs[i].Queue != "" {
+				queues[jobs[i].Queue] = true
 			}
 		}
 	}
@@ -108,7 +108,6 @@ func AnalyzeSource(framework SourceFramework, files map[string]string) *CodeAnal
 var sidekiqWorkerRegex = regexp.MustCompile(`class\s+(\w+)\s*\n(?:[^}]*?)include\s+Sidekiq::Worker`)
 var sidekiqJobRegex = regexp.MustCompile(`class\s+(\w+)\s*<\s*(?:ApplicationJob|ActiveJob::Base)`)
 var sidekiqQueueRegex = regexp.MustCompile(`sidekiq_options\s+queue:\s*['":](\w+)`)
-var sidekiqRetryRegex = regexp.MustCompile(`sidekiq_options\s+.*retry:\s*(\w+)`)
 
 func analyzeSidekiqFile(content, path string) []JobDefinition {
 	var jobs []JobDefinition
@@ -198,7 +197,6 @@ func analyzeBullMQFile(content, path string) []JobDefinition {
 
 var celeryTaskRegex = regexp.MustCompile(`@(?:app\.task|shared_task|celery\.task)\s*(?:\([^)]*\))?\s*\ndef\s+(\w+)`)
 var celeryQueueRegex = regexp.MustCompile(`queue\s*=\s*['"]([^'"]+)['"]`)
-var celeryRetryRegex = regexp.MustCompile(`max_retries\s*=\s*(\d+)`)
 
 func analyzeCeleryFile(content, path string) []JobDefinition {
 	var jobs []JobDefinition
@@ -227,8 +225,8 @@ func analyzeCeleryFile(content, path string) []JobDefinition {
 // --- Code Generator ---
 
 // GenerateOJSCode generates OJS-equivalent code for a job definition.
-func GenerateOJSCode(job JobDefinition, targetLang string) GeneratedCode {
-	ojsType := toOJSJobType(job.Name, job.Framework)
+func GenerateOJSCode(job *JobDefinition, targetLang string) GeneratedCode {
+	ojsType := toOJSJobType(job.Name)
 
 	gen := GeneratedCode{
 		JobName:  job.Name,
@@ -258,8 +256,8 @@ func GenerateMigrationPlan(analysis *CodeAnalysisResult, targetLang string) *Cod
 		Analysis:  *analysis,
 	}
 
-	for _, job := range analysis.Jobs {
-		plan.Generated = append(plan.Generated, GenerateOJSCode(job, targetLang))
+	for i := range analysis.Jobs {
+		plan.Generated = append(plan.Generated, GenerateOJSCode(&analysis.Jobs[i], targetLang))
 	}
 
 	plan.Summary = fmt.Sprintf("Migration from %s: %d jobs across %d queues → OJS %s code",
@@ -275,7 +273,7 @@ func (p *CodeMigrationPlan) JSON() ([]byte, error) {
 
 // --- Helpers ---
 
-func toOJSJobType(name string, framework SourceFramework) string {
+func toOJSJobType(name string) string {
 	// Convert CamelCase to dot-separated lowercase
 	s := camelToSnake(name)
 	s = strings.ReplaceAll(s, "_", ".")
@@ -293,7 +291,7 @@ func camelToSnake(s string) string {
 	return strings.ToLower(result.String())
 }
 
-func generateGoClient(ojsType string, job JobDefinition) string {
+func generateGoClient(ojsType string, job *JobDefinition) string {
 	queue := job.Queue
 	if queue == "" {
 		queue = "default"
@@ -304,7 +302,7 @@ client.Enqueue(ctx, "%s", ojs.Args{"key": "value"},
 )`, job.Name, ojsType, queue)
 }
 
-func generateGoWorker(ojsType string, job JobDefinition) string {
+func generateGoWorker(ojsType string, job *JobDefinition) string {
 	return fmt.Sprintf(`// Handle %s jobs (migrated from %s)
 worker.Register("%s", func(ctx ojs.JobContext) error {
     // Migrate your %s handler logic here.
@@ -313,13 +311,13 @@ worker.Register("%s", func(ctx ojs.JobContext) error {
 })`, job.Name, job.Framework, ojsType, job.Name, job.FilePath)
 }
 
-func generateTSClient(ojsType string, job JobDefinition) string {
+func generateTSClient(ojsType string, job *JobDefinition) string {
 	return fmt.Sprintf(`// Enqueue %s job
 await client.enqueue('%s', { key: 'value' }, { queue: '%s' });`,
 		job.Name, ojsType, job.Queue)
 }
 
-func generateTSWorker(ojsType string, job JobDefinition) string {
+func generateTSWorker(ojsType string, job *JobDefinition) string {
 	return fmt.Sprintf(`// Handle %s jobs (migrated from %s)
 worker.register('%s', async (ctx) => {
   // Migrate your %s handler logic here.
@@ -327,13 +325,13 @@ worker.register('%s', async (ctx) => {
 });`, job.Name, job.Framework, ojsType, job.Name, job.FilePath)
 }
 
-func generatePythonClient(ojsType string, job JobDefinition) string {
+func generatePythonClient(ojsType string, job *JobDefinition) string {
 	return fmt.Sprintf(`# Enqueue %s job
 await client.enqueue('%s', {'key': 'value'}, queue='%s')`,
 		job.Name, ojsType, job.Queue)
 }
 
-func generatePythonWorker(ojsType string, job JobDefinition) string {
+func generatePythonWorker(ojsType string, job *JobDefinition) string {
 	return fmt.Sprintf(`# Handle %s jobs (migrated from %s)
 @worker.register('%s')
 async def handle_%s(ctx):
