@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+const maxAuditResponseBytes = 1 << 20
+
 // Severity classifies check results.
 type Severity string
 
@@ -39,12 +41,12 @@ type Check struct {
 
 // Report is the complete audit output.
 type Report struct {
-	ServerURL  string    `json:"server_url"`
-	Timestamp  time.Time `json:"timestamp"`
-	Checks     []Check   `json:"checks"`
-	Score      int       `json:"score"`       // 0-100
-	MaxScore   int       `json:"max_score"`
-	Grade      string    `json:"grade"`        // A, B, C, D, F
+	ServerURL  string                   `json:"server_url"`
+	Timestamp  time.Time                `json:"timestamp"`
+	Checks     []Check                  `json:"checks"`
+	Score      int                      `json:"score"` // 0-100
+	MaxScore   int                      `json:"max_score"`
+	Grade      string                   `json:"grade"` // A, B, C, D, F
 	Categories map[string]CategoryScore `json:"categories"`
 }
 
@@ -258,7 +260,12 @@ func (a *Auditor) checkQueueExists(ctx context.Context) Check {
 		return c
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readAuditResponse(resp.Body)
+	if err != nil {
+		c.Severity = SevSkip
+		c.Message = "Could not read queues response"
+		return c
+	}
 	if strings.Contains(string(body), `"name"`) {
 		c.Severity = SevPass
 		c.Message = "Queues are configured"
@@ -280,8 +287,18 @@ func (a *Auditor) checkDeadLetterEmpty(ctx context.Context) Check {
 	var result struct {
 		Pagination struct{ Total int } `json:"pagination"`
 	}
-	body, _ := io.ReadAll(resp.Body)
-	json.Unmarshal(body, &result)
+	body, err := readAuditResponse(resp.Body)
+	if err != nil {
+		c.Severity = SevSkip
+		c.Message = "Could not read dead-letter response"
+		return c
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		c.Severity = SevSkip
+		c.Message = "Could not decode dead-letter response"
+		return c
+	}
 	if result.Pagination.Total == 0 {
 		c.Severity = SevPass
 		c.Message = "Dead letter queue is empty"
@@ -291,6 +308,17 @@ func (a *Auditor) checkDeadLetterEmpty(ctx context.Context) Check {
 		c.Fix = "Use 'ojs dead-letter' to inspect and 'ojs dead-letter retry' to replay"
 	}
 	return c
+}
+
+func readAuditResponse(reader io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, maxAuditResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxAuditResponseBytes {
+		return nil, fmt.Errorf("response exceeds %d bytes", maxAuditResponseBytes)
+	}
+	return body, nil
 }
 
 func (a *Auditor) checkWorkerHeartbeat(_ context.Context) Check {
@@ -417,5 +445,5 @@ func (a *Auditor) checkJobRetention(_ context.Context) Check {
 func (a *Auditor) checkSpecCompliance(_ context.Context) Check {
 	return Check{ID: "SPEC-005", Category: "compliance", Name: "Conformance Level", Severity: SevInfo,
 		Description: "Run conformance tests to validate spec compliance",
-		Message: "Use: ojs-conformance-runner -url " + a.serverURL + " -suites ./suites"}
+		Message:     "Use: ojs-conformance-runner -url " + a.serverURL + " -suites ./suites"}
 }
