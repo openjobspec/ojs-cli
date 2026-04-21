@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"strings"
@@ -73,7 +72,9 @@ func debugInspect(c *client.Client, args []string) error {
 	}
 
 	var job map[string]interface{}
-	json.Unmarshal(data, &job)
+	if err := decodeResponse(data, &job); err != nil {
+		return err
+	}
 
 	if output.Format == "json" {
 		return output.JSON(job)
@@ -135,15 +136,11 @@ func debugTrace(c *client.Client, args []string) error {
 			return err
 		}
 		fmt.Println("ℹ  Trace endpoint not available. Showing job state:")
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var trace struct {
@@ -154,7 +151,9 @@ func debugTrace(c *client.Client, args []string) error {
 			Error    string `json:"error"`
 		} `json:"snapshots"`
 	}
-	json.Unmarshal(data, &trace)
+	if err := decodeResponse(data, &trace); err != nil {
+		return err
+	}
 
 	fmt.Printf("Trace for job %s\n\n", jobID)
 	for i, snap := range trace.Snapshots {
@@ -174,10 +173,12 @@ func debugTrace(c *client.Client, args []string) error {
 
 // debugReplay re-enqueues a failed job.
 func debugReplay(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("debug replay", flag.ExitOnError)
+	fs := flag.NewFlagSet("debug replay", flag.ContinueOnError)
 	queue := fs.String("queue", "", "Override queue for replayed job")
 	priority := fs.Int("priority", 0, "Override priority")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	remaining := fs.Args()
 	if len(remaining) == 0 {
@@ -192,7 +193,9 @@ func debugReplay(c *client.Client, args []string) error {
 	}
 
 	var job map[string]interface{}
-	json.Unmarshal(data, &job)
+	if err := decodeResponse(data, &job); err != nil {
+		return err
+	}
 
 	// Build replay request
 	reqBody := map[string]interface{}{
@@ -211,14 +214,15 @@ func debugReplay(c *client.Client, args []string) error {
 		reqBody["meta"] = meta
 	}
 
-	body, _ := json.Marshal(reqBody)
-	respData, _, err := c.Post("/jobs", body)
+	respData, _, err := c.Post("/jobs", reqBody)
 	if err != nil {
 		return fmt.Errorf("failed to replay job: %w", err)
 	}
 
 	var resp map[string]interface{}
-	json.Unmarshal(respData, &resp)
+	if err := decodeResponse(respData, &resp); err != nil {
+		return err
+	}
 
 	fmt.Printf("✓ Job replayed successfully\n")
 	fmt.Printf("  Original: %s\n", jobID)
@@ -244,15 +248,11 @@ func debugHistory(c *client.Client, args []string) error {
 			return err
 		}
 		fmt.Println("ℹ  Event history not available. Showing current state.")
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
@@ -262,7 +262,9 @@ func debugHistory(c *client.Client, args []string) error {
 			Timestamp time.Time `json:"timestamp"`
 		} `json:"events"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	fmt.Printf("State history for %s:\n\n", jobID)
 	for i, e := range resp.Events {
@@ -278,9 +280,11 @@ func debugHistory(c *client.Client, args []string) error {
 
 // debugBottleneck identifies slowest job types and queues.
 func debugBottleneck(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("debug bottleneck", flag.ExitOnError)
+	fs := flag.NewFlagSet("debug bottleneck", flag.ContinueOnError)
 	limit := fs.Int("limit", 10, "Number of results")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	data, _, err := c.Get(fmt.Sprintf("/admin/stats?detail=true&limit=%d", *limit))
 	if err != nil {
@@ -288,20 +292,20 @@ func debugBottleneck(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var stats struct {
 		Queues []struct {
-			Name         string  `json:"name"`
-			Depth        int     `json:"depth"`
+			Name          string  `json:"name"`
+			Depth         int     `json:"depth"`
 			AvgDurationMs float64 `json:"avg_duration_ms"`
-			ErrorRate    float64 `json:"error_rate"`
+			ErrorRate     float64 `json:"error_rate"`
 		} `json:"queues"`
 	}
-	json.Unmarshal(data, &stats)
+	if err := decodeResponse(data, &stats); err != nil {
+		return err
+	}
 
 	fmt.Println("Queue Bottleneck Analysis")
 	fmt.Println("─────────────────────────────────────────")
@@ -329,13 +333,13 @@ func debugQueue(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var q map[string]interface{}
-	json.Unmarshal(data, &q)
+	if err := decodeResponse(data, &q); err != nil {
+		return err
+	}
 
 	fmt.Printf("Queue: %s\n", queueName)
 	fmt.Println("───────────────────────────")
@@ -348,9 +352,11 @@ func debugQueue(c *client.Client, args []string) error {
 
 // debugFailures lists recent failures.
 func debugFailures(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("debug failures", flag.ExitOnError)
+	fs := flag.NewFlagSet("debug failures", flag.ContinueOnError)
 	limit := fs.Int("limit", 20, "Number of failures to show")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	data, _, err := c.Get(fmt.Sprintf("/jobs?state=discarded&limit=%d", *limit))
 	if err != nil {
@@ -358,9 +364,7 @@ func debugFailures(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
@@ -371,7 +375,9 @@ func debugFailures(c *client.Client, args []string) error {
 			Queue string `json:"queue"`
 		} `json:"jobs"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	fmt.Printf("Recent Failures (%d)\n", len(resp.Jobs))
 	fmt.Println("─────────────────────────────────────────────────────")
@@ -381,7 +387,11 @@ func debugFailures(c *client.Client, args []string) error {
 		if len(errStr) > 60 {
 			errStr = errStr[:57] + "..."
 		}
-		fmt.Printf("  %s  %-20s  %s\n", j.ID[:12], j.Type, errStr)
+		id := j.ID
+		if len(id) > 12 {
+			id = id[:12]
+		}
+		fmt.Printf("  %s  %-20s  %s\n", id, j.Type, errStr)
 	}
 
 	return nil
@@ -399,9 +409,7 @@ func debugHealth(c *client.Client, _ []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var health struct {
@@ -410,7 +418,9 @@ func debugHealth(c *client.Client, _ []string) error {
 		SLOViolations int     `json:"slo_violations"`
 		AnomalyCount  int     `json:"anomaly_count"`
 	}
-	json.Unmarshal(data, &health)
+	if err := decodeResponse(data, &health); err != nil {
+		return err
+	}
 
 	icon := "✓"
 	if health.Status == "degraded" {
