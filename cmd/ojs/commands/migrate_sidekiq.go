@@ -3,17 +3,19 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
+	"github.com/openjobspec/ojs-cli/internal/fileutil"
 	"gopkg.in/yaml.v3"
 )
 
 // sidekiqConfig represents a Sidekiq YAML configuration file.
 type sidekiqConfig struct {
-	Concurrency int              `yaml:":concurrency"`
-	Queues      []string         `yaml:":queues"`
-	Workers     []sidekiqWorker  `yaml:"workers"`
+	Concurrency int             `yaml:":concurrency"`
+	Queues      []string        `yaml:":queues"`
+	Workers     []sidekiqWorker `yaml:"workers"`
 }
 
 type sidekiqWorker struct {
@@ -25,10 +27,10 @@ type sidekiqWorker struct {
 
 // ojsJobDefinition is the output format for converted job definitions.
 type ojsJobDefinition struct {
-	Type    string             `json:"type"`
-	Queue   string             `json:"queue"`
-	Options ojsJobOptions      `json:"options,omitempty"`
-	Cron    string             `json:"cron,omitempty"`
+	Type    string        `json:"type"`
+	Queue   string        `json:"queue"`
+	Options ojsJobOptions `json:"options,omitempty"`
+	Cron    string        `json:"cron,omitempty"`
 }
 
 type ojsJobOptions struct {
@@ -146,23 +148,16 @@ func sidekiqClassToOJSType(class string) string {
 }
 
 func writeOutput(result *ojsMigrateOutput, outputFile string) error {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	writer := os.Stdout
-
-	if outputFile != "" {
-		f, err := os.Create(outputFile)
-		if err != nil {
-			return fmt.Errorf("create output file: %w", err)
-		}
-		defer f.Close()
-		writer = f
-		enc = json.NewEncoder(f)
-		enc.SetIndent("", "  ")
+	write := func(writer io.Writer) error {
+		encoder := json.NewEncoder(writer)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(result)
 	}
-	_ = writer
-
-	if err := enc.Encode(result); err != nil {
+	if outputFile == "" {
+		if err := write(os.Stdout); err != nil {
+			return fmt.Errorf("write output: %w", err)
+		}
+	} else if err := fileutil.WriteAtomic(outputFile, 0o644, write); err != nil {
 		return fmt.Errorf("write output: %w", err)
 	}
 

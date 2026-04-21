@@ -4,14 +4,18 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/openjobspec/ojs-cli/internal/fileutil"
+	"gopkg.in/yaml.v3"
 )
 
 // MigrateGenerate generates OJS-compatible job definitions from source system analysis
 func MigrateGenerate(args []string) error {
-	fs := flag.NewFlagSet("migrate generate", flag.ExitOnError)
+	fs := flag.NewFlagSet("migrate generate", flag.ContinueOnError)
 	source := fs.String("source", "", "Source system (sidekiq, bullmq, celery, faktory, river)")
 	outputDir := fs.String("output", "./ojs-migration", "Output directory for generated files")
 	format := fs.String("format", "json", "Output format (json, yaml)")
@@ -44,6 +48,9 @@ Examples:
 		fs.Usage()
 		return fmt.Errorf("--source is required")
 	}
+	if *format != "json" && *format != "yaml" {
+		return fmt.Errorf("unsupported format %q (expected json or yaml)", *format)
+	}
 
 	templates := getMigrationTemplates(*source)
 	if templates == nil {
@@ -55,30 +62,30 @@ Examples:
 	}
 
 	// Write migration plan
-	plan := generateMigrationPlan(*source, templates)
+	plan := generateMigrationPlan(*source)
 	planPath := filepath.Join(*outputDir, "migration-plan."+*format)
-	if err := writeJSON(planPath, plan); err != nil {
+	if err := writeMigrationDocument(planPath, plan, *format); err != nil {
 		return fmt.Errorf("writing migration plan: %w", err)
 	}
 	fmt.Printf("✅ Migration plan: %s\n", planPath)
 
 	// Write job type mappings
 	mappingPath := filepath.Join(*outputDir, "job-mappings."+*format)
-	if err := writeJSON(mappingPath, templates.JobMappings); err != nil {
+	if err := writeMigrationDocument(mappingPath, templates.JobMappings, *format); err != nil {
 		return fmt.Errorf("writing job mappings: %w", err)
 	}
 	fmt.Printf("✅ Job mappings:   %s\n", mappingPath)
 
 	// Write queue config
 	queuePath := filepath.Join(*outputDir, "queue-config."+*format)
-	if err := writeJSON(queuePath, templates.QueueConfig); err != nil {
+	if err := writeMigrationDocument(queuePath, templates.QueueConfig, *format); err != nil {
 		return fmt.Errorf("writing queue config: %w", err)
 	}
 	fmt.Printf("✅ Queue config:   %s\n", queuePath)
 
 	// Write retry policy mapping
 	retryPath := filepath.Join(*outputDir, "retry-policies."+*format)
-	if err := writeJSON(retryPath, templates.RetryPolicies); err != nil {
+	if err := writeMigrationDocument(retryPath, templates.RetryPolicies, *format); err != nil {
 		return fmt.Errorf("writing retry policies: %w", err)
 	}
 	fmt.Printf("✅ Retry policies: %s\n", retryPath)
@@ -91,10 +98,10 @@ Examples:
 }
 
 type migrationTemplates struct {
-	Source        string                `json:"source"`
-	JobMappings   []jobMapping          `json:"job_mappings"`
-	QueueConfig   []queueConfig         `json:"queue_config"`
-	RetryPolicies []retryPolicyMapping  `json:"retry_policies"`
+	Source        string               `json:"source"`
+	JobMappings   []jobMapping         `json:"job_mappings"`
+	QueueConfig   []queueConfig        `json:"queue_config"`
+	RetryPolicies []retryPolicyMapping `json:"retry_policies"`
 }
 
 type jobMapping struct {
@@ -218,7 +225,7 @@ func getMigrationTemplates(source string) *migrationTemplates {
 	return nil
 }
 
-func generateMigrationPlan(source string, templates *migrationTemplates) migrationPlan {
+func generateMigrationPlan(source string) migrationPlan {
 	return migrationPlan{
 		Source:      source,
 		Target:      "ojs",
@@ -238,13 +245,21 @@ func generateMigrationPlan(source string, templates *migrationTemplates) migrati
 	}
 }
 
-func writeJSON(path string, v interface{}) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
+func writeMigrationDocument(path string, value any, format string) error {
+	return fileutil.WriteAtomic(path, 0o644, func(writer io.Writer) error {
+		switch format {
+		case "json":
+			encoder := json.NewEncoder(writer)
+			encoder.SetIndent("", "  ")
+			return encoder.Encode(value)
+		case "yaml":
+			encoder := yaml.NewEncoder(writer)
+			if err := encoder.Encode(value); err != nil {
+				return err
+			}
+			return encoder.Close()
+		default:
+			return fmt.Errorf("unsupported format %q", format)
+		}
+	})
 }
