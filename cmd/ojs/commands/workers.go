@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 
@@ -11,13 +10,15 @@ import (
 
 // Workers lists active workers and manages worker state.
 func Workers(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("workers", flag.ExitOnError)
+	fs := flag.NewFlagSet("workers", flag.ContinueOnError)
 	quiet := fs.Bool("quiet", false, "Signal all workers to stop fetching new jobs")
 	resume := fs.Bool("resume", false, "Signal all workers to resume fetching jobs")
 	detail := fs.String("detail", "", "Show detailed info for a specific worker ID")
 	quietWorker := fs.String("quiet-worker", "", "Signal a specific worker to stop fetching")
 	deregister := fs.String("deregister", "", "Deregister a stale worker by ID")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	if *detail != "" {
 		return workerDetail(c, *detail)
@@ -41,9 +42,7 @@ func Workers(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
@@ -61,7 +60,9 @@ func Workers(c *client.Client, args []string) error {
 			Stale   int `json:"stale"`
 		} `json:"summary"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	fmt.Printf("Workers: %d total, %d running, %d quiet, %d stale\n\n",
 		resp.Summary.Total, resp.Summary.Running, resp.Summary.Quiet, resp.Summary.Stale)
@@ -94,9 +95,7 @@ func setWorkerDirective(c *client.Client, directive string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	switch directive {
@@ -115,9 +114,7 @@ func workerDetail(c *client.Client, workerID string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var w struct {
@@ -131,7 +128,9 @@ func workerDetail(c *client.Client, workerID string) error {
 		Hostname      string   `json:"hostname"`
 		PID           int      `json:"pid"`
 	}
-	json.Unmarshal(data, &w)
+	if err := decodeResponse(data, &w); err != nil {
+		return err
+	}
 
 	queuesStr := "-"
 	if len(w.Queues) > 0 {

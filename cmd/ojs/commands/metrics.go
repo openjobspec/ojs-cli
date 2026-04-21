@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 
@@ -11,9 +10,11 @@ import (
 
 // Metrics retrieves server metrics.
 func Metrics(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("metrics", flag.ExitOnError)
+	fs := flag.NewFlagSet("metrics", flag.ContinueOnError)
 	format := fs.String("format", "", "Output format: prometheus or json (default: auto)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	if *format == "prometheus" {
 		data, _, err := c.Get("/metrics?format=prometheus")
@@ -30,23 +31,23 @@ func Metrics(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" || *format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
-		Uptime          float64 `json:"uptime_seconds"`
-		JobsEnqueued    int     `json:"jobs_enqueued_total"`
-		JobsCompleted   int     `json:"jobs_completed_total"`
-		JobsFailed      int     `json:"jobs_failed_total"`
-		JobsActive      int     `json:"jobs_active"`
-		QueuesActive    int     `json:"queues_active"`
-		WorkersActive   int     `json:"workers_active"`
-		AvgLatencyMs    float64 `json:"avg_latency_ms"`
+		Uptime           float64 `json:"uptime_seconds"`
+		JobsEnqueued     int     `json:"jobs_enqueued_total"`
+		JobsCompleted    int     `json:"jobs_completed_total"`
+		JobsFailed       int     `json:"jobs_failed_total"`
+		JobsActive       int     `json:"jobs_active"`
+		QueuesActive     int     `json:"queues_active"`
+		WorkersActive    int     `json:"workers_active"`
+		AvgLatencyMs     float64 `json:"avg_latency_ms"`
 		ThroughputPerSec float64 `json:"throughput_per_second"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	headers := []string{"METRIC", "VALUE"}
 	rows := [][]string{

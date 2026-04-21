@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/openjobspec/ojs-cli/internal/client"
@@ -21,14 +20,13 @@ func Retry(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp map[string]any
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 	output.Success("Job %s retried (state=%s)", jobID, str(resp["state"]))
 	return nil
 }
-

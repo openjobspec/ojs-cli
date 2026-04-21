@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 
@@ -11,10 +10,12 @@ import (
 
 // Result retrieves the result of a completed job.
 func Result(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("result", flag.ExitOnError)
+	fs := flag.NewFlagSet("result", flag.ContinueOnError)
 	wait := fs.Bool("wait", false, "Wait for job to complete before returning result")
 	timeout := fs.Int("timeout", 30, "Timeout in seconds when using --wait")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	remaining := fs.Args()
 	if len(remaining) == 0 {
@@ -33,13 +34,13 @@ func Result(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp map[string]any
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	headers := []string{"FIELD", "VALUE"}
 	rows := [][]string{
@@ -47,8 +48,11 @@ func Result(c *client.Client, args []string) error {
 		{"State", str(resp["state"])},
 	}
 	if resp["result"] != nil {
-		resultJSON, _ := json.Marshal(resp["result"])
-		rows = append(rows, []string{"Result", string(resultJSON)})
+		resultJSON, err := formatJSONValue(resp["result"])
+		if err != nil {
+			return err
+		}
+		rows = append(rows, []string{"Result", resultJSON})
 	}
 	if resp["error"] != nil {
 		rows = append(rows, []string{"Error", str(resp["error"])})

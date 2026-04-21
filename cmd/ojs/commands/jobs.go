@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 
@@ -11,12 +10,14 @@ import (
 
 // Jobs lists jobs with optional filtering.
 func Jobs(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("jobs", flag.ExitOnError)
+	fs := flag.NewFlagSet("jobs", flag.ContinueOnError)
 	state := fs.String("state", "", "Filter by state (available, active, completed, retryable, discarded, cancelled)")
 	queue := fs.String("queue", "", "Filter by queue name")
 	jobType := fs.String("type", "", "Filter by job type")
 	limit := fs.Int("limit", 25, "Max results to return")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	path := fmt.Sprintf("/jobs?limit=%d", *limit)
 	if *state != "" {
@@ -35,16 +36,16 @@ func Jobs(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
 		Jobs  []map[string]any `json:"jobs"`
 		Total int              `json:"total"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	fmt.Printf("Jobs: %d total\n\n", resp.Total)
 
@@ -64,4 +65,3 @@ func Jobs(c *client.Client, args []string) error {
 	output.Table(headers, rows)
 	return nil
 }
-

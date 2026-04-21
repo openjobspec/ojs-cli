@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 
@@ -11,9 +10,11 @@ import (
 
 // Priority updates job priority.
 func Priority(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("priority", flag.ExitOnError)
+	fs := flag.NewFlagSet("priority", flag.ContinueOnError)
 	set := fs.Int("set", -1, "New priority value (0-255)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	remaining := fs.Args()
 	if len(remaining) == 0 {
@@ -36,9 +37,7 @@ func Priority(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	output.Success("Job %s priority updated to %d", jobID, *set)

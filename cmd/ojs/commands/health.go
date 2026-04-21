@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/openjobspec/ojs-cli/internal/client"
@@ -16,13 +15,13 @@ func Health(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var health map[string]any
-	json.Unmarshal(data, &health)
+	if err := decodeResponse(data, &health); err != nil {
+		return err
+	}
 
 	status := str(health["status"])
 	version := str(health["version"])

@@ -9,12 +9,14 @@ import (
 
 // Codegen generates type-safe SDK code from job type definitions.
 func Codegen(args []string) error {
-	fs := flag.NewFlagSet("codegen", flag.ExitOnError)
+	fs := flag.NewFlagSet("codegen", flag.ContinueOnError)
 	manifest := fs.String("manifest", "ojs-jobs.yaml", "Path to job type manifest (YAML or JSON)")
 	lang := fs.String("lang", "go", "Target language: go, typescript, python, java, rust, ruby, dotnet")
 	outDir := fs.String("out", "./generated", "Output directory")
 	pkg := fs.String("package", "", "Package name override (Go only)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	m, err := codegen.LoadManifest(*manifest)
 	if err != nil {
