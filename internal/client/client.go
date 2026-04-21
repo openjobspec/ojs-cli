@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,12 +10,15 @@ import (
 	"time"
 
 	"github.com/openjobspec/ojs-cli/internal/config"
+	"github.com/openjobspec/ojs-cli/internal/redact"
 )
+
+const maxResponseBytes = 8 << 20
 
 // Client wraps HTTP calls to an OJS server.
 type Client struct {
-	cfg    *config.Config
-	http   *http.Client
+	cfg  *config.Config
+	http *http.Client
 }
 
 // New creates a new OJS API client.
@@ -36,8 +40,8 @@ type ErrorResponse struct {
 	} `json:"error"`
 }
 
-func (c *Client) do(method, path string, body any) ([]byte, int, error) {
-	url := c.cfg.BaseURL() + path
+func (c *Client) do(ctx context.Context, method, path string, body any) ([]byte, int, error) {
+	endpoint := c.cfg.BaseURL() + path
 
 	var bodyReader io.Reader
 	if body != nil {
@@ -48,7 +52,7 @@ func (c *Client) do(method, path string, body any) ([]byte, int, error) {
 		bodyReader = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequest(method, url, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, bodyReader)
 	if err != nil {
 		return nil, 0, fmt.Errorf("create request: %w", err)
 	}
@@ -61,13 +65,20 @@ func (c *Client) do(method, path string, body any) ([]byte, int, error) {
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("request to %s failed: %w\n\nHint: verify the server is running and OJS_URL is correct (current: %s)", url, err, c.cfg.ServerURL)
+		return nil, 0, fmt.Errorf(
+			"request failed: %w\n\nHint: verify the server is running and OJS_URL is correct (current: %s)",
+			redact.RequestError(err),
+			redact.URL(c.cfg.ServerURL),
+		)
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
+	}
+	if len(data) > maxResponseBytes {
+		return nil, resp.StatusCode, fmt.Errorf("response exceeds %d bytes", maxResponseBytes)
 	}
 
 	if resp.StatusCode >= 400 {
@@ -92,38 +103,41 @@ func (c *Client) BaseURL() string {
 
 // Get performs a GET request.
 func (c *Client) Get(path string) ([]byte, int, error) {
-	return c.do(http.MethodGet, path, nil)
+	return c.do(context.Background(), http.MethodGet, path, nil)
 }
 
 // Post performs a POST request with a JSON body.
 func (c *Client) Post(path string, body any) ([]byte, int, error) {
-	return c.do(http.MethodPost, path, body)
+	return c.do(context.Background(), http.MethodPost, path, body)
 }
 
 // Delete performs a DELETE request.
 func (c *Client) Delete(path string) ([]byte, int, error) {
-	return c.do(http.MethodDelete, path, nil)
+	return c.do(context.Background(), http.MethodDelete, path, nil)
 }
 
 // Patch performs a PATCH request with a JSON body.
 func (c *Client) Patch(path string, body any) ([]byte, int, error) {
-	return c.do(http.MethodPatch, path, body)
+	return c.do(context.Background(), http.MethodPatch, path, body)
 }
 
 // Put performs a PUT request with a JSON body.
 func (c *Client) Put(path string, body any) ([]byte, int, error) {
-	return c.do(http.MethodPut, path, body)
+	return c.do(context.Background(), http.MethodPut, path, body)
 }
 
 // errorHint returns a user-friendly suggestion for common HTTP error codes.
+//
+// StatusNotFound is intentionally omitted: OJS servers return a specific
+// message for missing resources (e.g. "job 'xyz' not found"), so appending a
+// generic hint would be redundant. Callers rely on the verbatim "code: message"
+// form for not-found errors.
 func errorHint(statusCode int) string {
 	switch statusCode {
 	case http.StatusUnauthorized:
-		return "check your auth token with 'ojs config show' or set OJS_AUTH_TOKEN"
+		return "check or set OJS_AUTH_TOKEN"
 	case http.StatusForbidden:
 		return "your credentials lack permission for this operation"
-	case http.StatusNotFound:
-		return "the resource was not found; verify the job ID, queue name, or endpoint path"
 	case http.StatusConflict:
 		return "a conflicting operation is in progress (e.g., unique job constraint or invalid state transition)"
 	case http.StatusTooManyRequests:
@@ -134,4 +148,3 @@ func errorHint(statusCode int) string {
 		return ""
 	}
 }
-
