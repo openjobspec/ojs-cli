@@ -1,15 +1,20 @@
-.PHONY: build test lint clean
+.PHONY: build test lint clean tidy-check
 
 BINARY = bin/ojs
+GO ?= go
+GO_ENV := GOWORK=off GOFLAGS=-mod=readonly
 
 build:
-	go build -o $(BINARY) ./cmd/ojs/
+	$(GO_ENV) $(GO) build -o $(BINARY) ./cmd/ojs/
 
 test:
-	go test ./... -race -cover
+	$(GO_ENV) $(GO) test ./... -race -cover
 
 lint:
-	go vet ./...
+	$(GO_ENV) $(GO) vet ./...
+
+tidy-check:
+	GOWORK=off $(GO) mod tidy -diff
 
 clean:
 	rm -rf bin/
