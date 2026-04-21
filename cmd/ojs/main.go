@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -10,119 +11,128 @@ import (
 	"github.com/openjobspec/ojs-cli/internal/output"
 )
 
-const version = "0.3.0"
+// version is overridden at release time via -ldflags "-X main.version=...".
+var version = "dev"
+
+var errAlreadyReported = errors.New("CLI error already reported")
+
+type globalAction int
+
+const (
+	actionRun globalAction = iota
+	actionHelp
+	actionVersion
+)
+
+type globalOptions struct {
+	args   []string
+	action globalAction
+	json   bool
+}
 
 func main() {
-	cfg := config.Load()
-	c := client.New(cfg)
-
-	if len(os.Args) < 2 {
-		printUsage()
+	if err := run(os.Args[1:]); err != nil {
+		if !errors.Is(err, errAlreadyReported) {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		os.Exit(1)
 	}
+}
 
-	// Global flags
-	args := os.Args[1:]
+func run(args []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	options, err := parseGlobalArgs(args, cfg)
+	if err != nil {
+		return err
+	}
+	if options.json {
+		cfg.Output = "json"
+	}
+	output.Format = cfg.Output
+
+	switch options.action {
+	case actionHelp:
+		printUsage()
+		return nil
+	case actionVersion:
+		fmt.Println("ojs version", version)
+		return nil
+	}
+	if len(options.args) == 0 {
+		printUsage()
+		return errAlreadyReported
+	}
+
+	apiClient := client.New(cfg)
+	handler, ok := commandHandlers(apiClient, cfg)[options.args[0]]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", options.args[0])
+		printUsage()
+		return errAlreadyReported
+	}
+	return handler(options.args[1:])
+}
+
+func parseGlobalArgs(args []string, cfg *config.Config) (globalOptions, error) {
+	options := globalOptions{args: make([]string, 0, len(args))}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--url":
-			if i+1 < len(args) {
-				cfg.ServerURL = args[i+1]
-				c = client.New(cfg)
-				args = append(args[:i], args[i+2:]...)
-				i--
+			if i+1 >= len(args) {
+				return globalOptions{}, fmt.Errorf("--url requires a value")
 			}
+			cfg.ServerURL = args[i+1]
+			i++
 		case "--json":
-			output.Format = "json"
-			args = append(args[:i], args[i+1:]...)
-			i--
+			options.json = true
 		case "--version", "-v":
-			fmt.Println("ojs version", version)
-			os.Exit(0)
+			options.action = actionVersion
 		case "--help", "-h":
-			printUsage()
-			os.Exit(0)
+			options.action = actionHelp
+		default:
+			options.args = append(options.args, args[i])
 		}
 	}
+	return options, nil
+}
 
-	if len(args) == 0 {
-		printUsage()
-		os.Exit(1)
-	}
-
-	var err error
-	switch args[0] {
-	case "dev":
-		err = commands.Dev(args[1:])
-	case "enqueue":
-		err = commands.Enqueue(c, args[1:])
-	case "status":
-		err = commands.Status(c, args[1:])
-	case "cancel":
-		err = commands.Cancel(c, args[1:])
-	case "health":
-		err = commands.Health(c, args[1:])
-	case "queues":
-		err = commands.Queues(c, args[1:])
-	case "workers":
-		err = commands.Workers(c, args[1:])
-	case "dead-letter":
-		err = commands.DeadLetter(c, args[1:])
-	case "cron":
-		err = commands.Cron(c, args[1:])
-	case "monitor":
-		err = commands.Monitor(c, args[1:])
-	case "workflow":
-		err = commands.Workflow(c, args[1:])
-	case "migrate":
-		err = commands.Migrate(c, args[1:])
-	case "completion":
-		err = commands.Completion(args[1:])
-	case "jobs":
-		err = commands.Jobs(c, args[1:])
-	case "result":
-		err = commands.Result(c, args[1:])
-	case "bulk":
-		err = commands.Bulk(c, args[1:])
-	case "priority":
-		err = commands.Priority(c, args[1:])
-	case "retries":
-		err = commands.Retries(c, args[1:])
-	case "metrics":
-		err = commands.Metrics(c, args[1:])
-	case "rate-limits":
-		err = commands.RateLimits(c, args[1:])
-	case "events":
-		err = commands.Events(cfg, args[1:])
-	case "system":
-		err = commands.System(c, args[1:])
-	case "webhooks":
-		err = commands.Webhooks(c, args[1:])
-	case "stats":
-		err = commands.Stats(c, args[1:])
-	case "retry":
-		err = commands.Retry(c, args[1:])
-	case "doctor":
-		err = commands.Doctor(c, args[1:])
-	case "debug":
-		err = commands.Debug(c, args[1:])
-	case "codegen":
-		err = commands.Codegen(args[1:])
-	case "contract":
-		err = commands.RunContractCommand(args[1:])
-	case "setup":
-		err = commands.RunSetupCommand(args[1:])
-	case "create":
-		err = commands.CreateProject(args[1:])
-	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
-		printUsage()
-		os.Exit(1)
-	}
-
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+func commandHandlers(apiClient *client.Client, cfg *config.Config) map[string]func([]string) error {
+	return map[string]func([]string) error{
+		"dev":         commands.Dev,
+		"enqueue":     func(args []string) error { return commands.Enqueue(apiClient, args) },
+		"status":      func(args []string) error { return commands.Status(apiClient, args) },
+		"cancel":      func(args []string) error { return commands.Cancel(apiClient, args) },
+		"health":      func(args []string) error { return commands.Health(apiClient, args) },
+		"queues":      func(args []string) error { return commands.Queues(apiClient, args) },
+		"workers":     func(args []string) error { return commands.Workers(apiClient, args) },
+		"dead-letter": func(args []string) error { return commands.DeadLetter(apiClient, args) },
+		"cron":        func(args []string) error { return commands.Cron(apiClient, args) },
+		"monitor":     func(args []string) error { return commands.Monitor(apiClient, args) },
+		"workflow":    func(args []string) error { return commands.Workflow(apiClient, args) },
+		"migrate":     func(args []string) error { return commands.Migrate(apiClient, args) },
+		"completion":  commands.Completion,
+		"jobs":        func(args []string) error { return commands.Jobs(apiClient, args) },
+		"result":      func(args []string) error { return commands.Result(apiClient, args) },
+		"bulk":        func(args []string) error { return commands.Bulk(apiClient, args) },
+		"priority":    func(args []string) error { return commands.Priority(apiClient, args) },
+		"retries":     func(args []string) error { return commands.Retries(apiClient, args) },
+		"metrics":     func(args []string) error { return commands.Metrics(apiClient, args) },
+		"rate-limits": func(args []string) error { return commands.RateLimits(apiClient, args) },
+		"events":      func(args []string) error { return commands.Events(cfg, args) },
+		"system":      func(args []string) error { return commands.System(apiClient, args) },
+		"webhooks":    func(args []string) error { return commands.Webhooks(apiClient, args) },
+		"stats":       func(args []string) error { return commands.Stats(apiClient, args) },
+		"retry":       func(args []string) error { return commands.Retry(apiClient, args) },
+		"doctor":      func(args []string) error { return commands.Doctor(apiClient, args) },
+		"debug":       func(args []string) error { return commands.Debug(apiClient, args) },
+		"codegen":     commands.Codegen,
+		"contract":    commands.RunContractCommand,
+		"setup":       commands.RunSetupCommand,
+		"create":      commands.CreateProject,
 	}
 }
 
@@ -178,4 +188,3 @@ Environment Variables:
   OJS_OUTPUT      Default output format (table|json)
 `)
 }
-
