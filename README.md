@@ -10,13 +10,20 @@ Command-line interface for [Open Job Spec](https://openjobspec.org) servers.
 ## Installation
 
 ```bash
-go install github.com/openjobspec/ojs-cli/cmd/ojs@latest
+go install github.com/openjobspec/ojs-cli/cmd/ojs@v0.5.0
 ```
 
-Or build from source:
+Build from source:
 
 ```bash
 make build
+```
+
+The module resolves its released dependencies without requiring a sibling checkout:
+
+```bash
+GOWORK=off go build ./...
+GOWORK=off go install ./cmd/ojs
 ```
 
 ## Quick Start
