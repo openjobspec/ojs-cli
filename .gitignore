@@ -11,6 +11,10 @@
 coverage.out
 *.test
 
+# Pre-release dependency and proxy artifacts
+/.release-deps/
+/.release-proxy/
+
 # IDE
 .idea/
 .vscode/
