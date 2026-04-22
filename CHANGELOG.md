@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-09-02
+
+### Changed
+- Hardened migration failure handling, redaction, streaming, output, and release packaging.
+
+## [0.4.1] - 2026-04-21
+
+### Fixed
+- Removed a spurious trailing newline from the `migrate shadow` prompt.
 
 ## [0.4.0] - 2026-04-20
 
@@ -46,4 +54,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cron detail/update**: `--detail <name>` for full cron info, `--update <name>` for PATCH updates, `--enabled` filter for list
 - **Queue config**: `--config <name>` with `--concurrency`, `--max-size`, `--retention` for updating queue configuration
 - **Status detail**: `--detail` flag for full admin job envelope (args, meta, options, error history)
-
