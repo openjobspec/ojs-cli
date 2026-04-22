@@ -87,7 +87,8 @@ func validateManifest(m *Manifest) error {
 		return fmt.Errorf("manifest contains no job types")
 	}
 	seen := make(map[string]bool)
-	for i, jt := range m.JobTypes {
+	for i := range m.JobTypes {
+		jt := &m.JobTypes[i]
 		if jt.Type == "" {
 			return fmt.Errorf("job_types[%d]: type is required", i)
 		}
