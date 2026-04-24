@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1](https://github.com/openjobspec/ojs-cli/compare/v0.4.0...v0.4.1) (2026-04-24)
+
+
+### Bug Fixes
+
+* remove spurious trailing newline in migrate shadow prompt ([54dc405](https://github.com/openjobspec/ojs-cli/commit/54dc40592a6c25dfe47e8539bf02235a90ff780a))
+
 ## [Unreleased]
 
 ## [0.4.0] - 2026-04-20
@@ -46,4 +53,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cron detail/update**: `--detail <name>` for full cron info, `--update <name>` for PATCH updates, `--enabled` filter for list
 - **Queue config**: `--config <name>` with `--concurrency`, `--max-size`, `--retention` for updating queue configuration
 - **Status detail**: `--detail` flag for full admin job envelope (args, meta, options, error history)
-
