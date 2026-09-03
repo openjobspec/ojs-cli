@@ -2,10 +2,14 @@ package commands
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -15,29 +19,33 @@ import (
 	"github.com/openjobspec/ojs-cli/internal/output"
 )
 
+const maxSSEEventLineBytes = 1 << 20
+
 // Events streams server-sent events from the OJS server.
 func Events(cfg *config.Config, args []string) error {
-	fs := flag.NewFlagSet("events", flag.ExitOnError)
+	fs := flag.NewFlagSet("events", flag.ContinueOnError)
 	follow := fs.Bool("follow", true, "Stream events continuously")
 	types := fs.String("types", "", "Filter by event types (comma-separated)")
 	queue := fs.String("queue", "", "Filter by queue name")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
-	path := "/ojs/v1/events/stream"
-	params := []string{}
+	query := make(url.Values)
 	if *types != "" {
-		params = append(params, "types="+*types)
+		query.Set("types", *types)
 	}
 	if *queue != "" {
-		params = append(params, "queue="+*queue)
+		query.Set("queue", *queue)
 	}
-	if len(params) > 0 {
-		path += "?" + strings.Join(params, "&")
+	endpoint := cfg.ServerURL + "/ojs/v1/events/stream"
+	if encoded := query.Encode(); encoded != "" {
+		endpoint += "?" + encoded
 	}
 
-	url := cfg.ServerURL + path
-
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -46,12 +54,11 @@ func Events(cfg *config.Config, args []string) error {
 		req.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
 	}
 
-	httpClient := &http.Client{
-		Timeout: 0, // no timeout for SSE
-	}
-
-	resp, err := httpClient.Do(req)
+	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil
+		}
 		return fmt.Errorf("connect to event stream: %w", err)
 	}
 	defer resp.Body.Close()
@@ -60,9 +67,6 @@ func Events(cfg *config.Config, args []string) error {
 		return fmt.Errorf("event stream returned HTTP %d", resp.StatusCode)
 	}
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt)
-
 	if !*follow {
 		fmt.Println("Streaming events (press Ctrl+C to stop)...")
 	} else {
@@ -70,43 +74,59 @@ func Events(cfg *config.Config, args []string) error {
 	}
 	fmt.Println()
 
-	scanner := bufio.NewScanner(resp.Body)
-	eventCh := make(chan string, 1)
+	err = scanSSE(ctx, resp.Body, renderSSEData)
+	switch {
+	case errors.Is(err, context.Canceled):
+		fmt.Println("\nEvent stream stopped.")
+		return nil
+	case err != nil:
+		return fmt.Errorf("read event stream: %w", err)
+	default:
+		fmt.Println("\nEvent stream closed.")
+		return nil
+	}
+}
 
-	go func() {
-		for scanner.Scan() {
-			eventCh <- scanner.Text()
+func scanSSE(ctx context.Context, reader io.Reader, handle func(string) error) error {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 64*1024), maxSSEEventLineBytes)
+
+	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		close(eventCh)
-	}()
-
-	for {
-		select {
-		case line, ok := <-eventCh:
-			if !ok {
-				fmt.Println("\nEvent stream closed.")
-				return nil
-			}
-			if strings.HasPrefix(line, "data:") {
-				data := strings.TrimPrefix(line, "data:")
-				data = strings.TrimSpace(data)
-				if output.Format == "json" {
-					fmt.Println(data)
-				} else {
-					var event map[string]any
-					if json.Unmarshal([]byte(data), &event) == nil {
-						ts := time.Now().Format("15:04:05")
-						fmt.Printf("[%s] %s: %s (job=%s, queue=%s)\n",
-							ts, str(event["type"]), str(event["event"]),
-							str(event["job_id"]), str(event["queue"]))
-					} else {
-						fmt.Println(data)
-					}
-				}
-			}
-		case <-sigCh:
-			fmt.Println("\nEvent stream stopped.")
-			return nil
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if err := handle(data); err != nil {
+			return err
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func renderSSEData(data string) error {
+	if output.Format == "json" {
+		fmt.Println(data)
+		return nil
+	}
+
+	var event map[string]any
+	if err := json.Unmarshal([]byte(data), &event); err != nil {
+		fmt.Println(data)
+		return nil
+	}
+	timestamp := time.Now().Format("15:04:05")
+	fmt.Printf("[%s] %s: %s (job=%s, queue=%s)\n",
+		timestamp, str(event["type"]), str(event["event"]),
+		str(event["job_id"]), str(event["queue"]))
+	return nil
 }

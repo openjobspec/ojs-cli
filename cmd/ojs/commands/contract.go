@@ -2,9 +2,9 @@ package commands
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/openjobspec/ojs-cli/internal/output"
 )
@@ -49,26 +49,15 @@ Examples:
 // --- contract test ---
 
 func (c *ContractCommand) runTest(args []string) error {
-	contractFile := ""
-	registryURL := ""
-
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--contracts", "-c":
-			if i+1 < len(args) {
-				contractFile = args[i+1]
-				i++
-			}
-		case "--registry", "-r":
-			if i+1 < len(args) {
-				registryURL = args[i+1]
-				i++
-			}
-		}
+	contractFile, registryURL, err := parseContractTestFlags(args)
+	if err != nil {
+		return err
 	}
-
 	if contractFile == "" {
 		return fmt.Errorf("--contracts flag is required (path to contracts JSON file)")
+	}
+	if registryURL != "" {
+		return fmt.Errorf("--registry is not implemented; contract tests are local-only")
 	}
 
 	data, err := os.ReadFile(contractFile)
@@ -82,9 +71,25 @@ func (c *ContractCommand) runTest(args []string) error {
 	}
 
 	// Run contract validation
-	results := validateContracts(contracts, registryURL)
+	results := validateContracts(contracts)
+	return renderContractTestResults(results)
+}
 
-	// Output results
+func parseContractTestFlags(args []string) (string, string, error) {
+	fs := flag.NewFlagSet("contract test", flag.ContinueOnError)
+	var contractFile string
+	var registryURL string
+	fs.StringVar(&contractFile, "contracts", "", "Path to contracts JSON file")
+	fs.StringVar(&contractFile, "c", "", "Path to contracts JSON file")
+	fs.StringVar(&registryURL, "registry", "", "Schema registry URL")
+	fs.StringVar(&registryURL, "r", "", "Schema registry URL")
+	if err := fs.Parse(args); err != nil {
+		return "", "", fmt.Errorf("parse flags: %w", err)
+	}
+	return contractFile, registryURL, nil
+}
+
+func renderContractTestResults(results *ContractTestSuite) error {
 	if output.Format == "json" {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -97,7 +102,6 @@ func (c *ContractCommand) runTest(args []string) error {
 		return nil
 	}
 
-	// Table output
 	passed, failed := 0, 0
 	for _, r := range results.Results {
 		status := "✅ PASS"
@@ -251,7 +255,7 @@ type ContractTestSuite struct {
 }
 
 // validateContracts runs pairwise validation between producer/consumer contracts.
-func validateContracts(contracts []ContractDef, registryURL string) *ContractTestSuite {
+func validateContracts(contracts []ContractDef) *ContractTestSuite {
 	suite := &ContractTestSuite{}
 
 	// Group by job type
@@ -270,9 +274,9 @@ func validateContracts(contracts []ContractDef, registryURL string) *ContractTes
 	// Cross-validate
 	for jobType, prods := range producers {
 		cons := consumers[jobType]
-		for _, p := range prods {
-			for _, c := range cons {
-				result := crossValidate(p, c)
+		for i := range prods {
+			for j := range cons {
+				result := crossValidate(&prods[i], &cons[j])
 				suite.Results = append(suite.Results, result)
 				if result.Passed {
 					suite.Passed++
@@ -316,7 +320,7 @@ func validateContracts(contracts []ContractDef, registryURL string) *ContractTes
 	return suite
 }
 
-func crossValidate(producer, consumer ContractDef) ContractTestResult {
+func crossValidate(producer, consumer *ContractDef) ContractTestResult {
 	result := ContractTestResult{
 		Service: fmt.Sprintf("%s↔%s", producer.Service, consumer.Service),
 		Role:    "cross",
@@ -356,9 +360,4 @@ func crossValidate(producer, consumer ContractDef) ContractTestResult {
 func RunContractCommand(args []string) error {
 	cmd := &ContractCommand{}
 	return cmd.Run(args)
-}
-
-// Helper to split "x.y" → find if it contains separators
-func splitDot(s string) []string {
-	return strings.Split(s, ".")
 }

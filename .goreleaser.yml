@@ -5,8 +5,8 @@ project_name: ojs
 
 before:
   hooks:
-    - go mod tidy
-    - go test ./...
+    - sh -c 'GOWORK=off go mod tidy -diff'
+    - sh -c 'GOWORK=off GOFLAGS=-mod=readonly go test ./...'
 
 builds:
   - main: ./cmd/ojs
@@ -21,14 +21,16 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}}
+      - -s -w -X main.version={{.Version}}
 
 archives:
-  - format: tar.gz
+  - formats:
+      - tar.gz
     name_template: "ojs_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
 
 checksum:
   name_template: checksums.txt
@@ -41,17 +43,9 @@ changelog:
       - '^test:'
       - '^ci:'
 
-brews:
-  - name: ojs
-    repository:
-      owner: openjobspec
-      name: homebrew-tap
-    description: "CLI for Open Job Spec servers"
-    homepage: "https://openjobspec.org"
-    license: "Apache-2.0"
-
 nfpms:
   - package_name: ojs
+    maintainer: "Open Job Spec Maintainers <security@openjobspec.org>"
     homepage: https://openjobspec.org
     description: "CLI for Open Job Spec servers"
     license: "Apache-2.0"

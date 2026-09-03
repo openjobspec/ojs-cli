@@ -3,10 +3,13 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/openjobspec/ojs-cli/internal/fileutil"
 	"github.com/openjobspec/ojs-go-backend-common/scaffold"
 )
 
@@ -35,54 +38,11 @@ func CreateProject(args []string) error {
 	}
 
 	name := args[0]
-	cfg := scaffold.ProjectConfig{
-		Name:         name,
-		Backend:      scaffold.BackendRedis,
-		Language:     scaffold.LangGo,
-		Port:         8080,
-		EnableDocker: true,
-		EnableCI:     true,
-		CIProvider:   "github",
+	cfg := defaultProjectConfig(name)
+	outputDir, dryRun, err := parseCreateOptions(&cfg, args[1:])
+	if err != nil {
+		return err
 	}
-
-	var outputDir string
-	var dryRun bool
-
-	for _, arg := range args[1:] {
-		key, value, _ := strings.Cut(arg, "=")
-		key = strings.TrimPrefix(key, "--")
-
-		switch key {
-		case "backend":
-			cfg.Backend = scaffold.Backend(value)
-		case "language", "lang":
-			cfg.Language = scaffold.Language(value)
-		case "queue":
-			cfg.Queue = value
-		case "port":
-			fmt.Sscanf(value, "%d", &cfg.Port)
-		case "otel":
-			cfg.EnableOTel = value == "" || value == "true"
-		case "docker":
-			cfg.EnableDocker = value != "false"
-		case "ci":
-			cfg.EnableCI = value != "false"
-		case "ci-provider":
-			cfg.CIProvider = value
-		case "module":
-			cfg.ModulePath = value
-		case "output-dir", "output", "dir":
-			outputDir = value
-		case "dry-run":
-			dryRun = value == "" || value == "true"
-		default:
-			return fmt.Errorf("unknown option: --%s\n\nSupported backends: %s\nSupported languages: %s",
-				key,
-				strings.Join(backendNames(), ", "),
-				strings.Join(languageNames(), ", "))
-		}
-	}
-
 	if outputDir == "" {
 		outputDir = name
 	}
@@ -91,41 +51,162 @@ func CreateProject(args []string) error {
 	if err != nil {
 		return fmt.Errorf("scaffold error: %w", err)
 	}
-
 	if dryRun {
-		fmt.Printf("Would create %d files in %s/:\n\n", len(files), outputDir)
-		for _, f := range files {
-			fmt.Printf("  📄 %s (%d bytes)\n", f.Path, len(f.Content))
-		}
+		printCreateDryRun(files, outputDir)
 		return nil
 	}
-
-	// Write files
-	created := 0
-	for _, f := range files {
-		fullPath := filepath.Join(outputDir, f.Path)
-		dir := filepath.Dir(fullPath)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			if created > 0 {
-				fmt.Fprintf(os.Stderr, "⚠️  Partial project created (%d/%d files). Clean up with: rm -rf %s\n", created, len(files), outputDir)
-			}
-			return fmt.Errorf("creating directory %s: %w\n\nHint: check directory permissions and available disk space", dir, err)
-		}
-		if err := os.WriteFile(fullPath, []byte(f.Content), 0o644); err != nil {
-			if created > 0 {
-				fmt.Fprintf(os.Stderr, "⚠️  Partial project created (%d/%d files). Clean up with: rm -rf %s\n", created, len(files), outputDir)
-			}
-			return fmt.Errorf("writing %s: %w\n\nHint: check available disk space and file permissions", fullPath, err)
-		}
-		created++
+	if err := writeProjectFiles(files, outputDir); err != nil {
+		return err
 	}
 
-	fmt.Printf("✅ Created %d files in %s/\n\n", created, outputDir)
+	fmt.Printf("✅ Created %d files in %s/\n\n", len(files), outputDir)
+	printCreateNextSteps(cfg.Language, name, outputDir)
+	return nil
+}
+
+func defaultProjectConfig(name string) scaffold.ProjectConfig {
+	return scaffold.ProjectConfig{
+		Name:         name,
+		Backend:      scaffold.BackendRedis,
+		Language:     scaffold.LangGo,
+		Port:         8080,
+		EnableDocker: true,
+		EnableCI:     true,
+		CIProvider:   "github",
+	}
+}
+
+func parseCreateOptions(cfg *scaffold.ProjectConfig, args []string) (string, bool, error) {
+	outputDir := ""
+	dryRun := false
+	simpleHandlers := map[string]func(string){
+		"backend": func(value string) {
+			cfg.Backend = scaffold.Backend(value)
+		},
+		"language": func(value string) {
+			cfg.Language = scaffold.Language(value)
+		},
+		"queue": func(value string) {
+			cfg.Queue = value
+		},
+		"ci-provider": func(value string) {
+			cfg.CIProvider = value
+		},
+		"module": func(value string) {
+			cfg.ModulePath = value
+		},
+		"output-dir": func(value string) {
+			outputDir = value
+		},
+	}
+	validatedHandlers := map[string]func(string) error{
+		"port": func(value string) error {
+			port, err := strconv.Atoi(value)
+			if err != nil || port < 1 || port > 65535 {
+				return fmt.Errorf("invalid --port %q (expected 1-65535)", value)
+			}
+			cfg.Port = port
+			return nil
+		},
+		"otel": func(value string) error {
+			enabled, err := parseOptionalBool(value)
+			cfg.EnableOTel = enabled
+			return err
+		},
+		"docker": func(value string) error {
+			enabled, err := parseOptionalBool(value)
+			cfg.EnableDocker = enabled
+			return err
+		},
+		"ci": func(value string) error {
+			enabled, err := parseOptionalBool(value)
+			cfg.EnableCI = enabled
+			return err
+		},
+		"dry-run": func(value string) error {
+			enabled, err := parseOptionalBool(value)
+			dryRun = enabled
+			return err
+		},
+	}
+
+	for _, arg := range args {
+		key, value, _ := strings.Cut(arg, "=")
+		key = strings.TrimPrefix(key, "--")
+		switch key {
+		case "lang":
+			key = "language"
+		case "output", "dir":
+			key = "output-dir"
+		}
+		if handler, ok := simpleHandlers[key]; ok {
+			handler(value)
+			continue
+		}
+		if handler, ok := validatedHandlers[key]; ok {
+			if err := handler(value); err != nil {
+				return "", false, err
+			}
+			continue
+		}
+		return "", false, fmt.Errorf("unknown option: --%s\n\nSupported backends: %s\nSupported languages: %s",
+			key,
+			strings.Join(backendNames(), ", "),
+			strings.Join(languageNames(), ", "))
+	}
+	return outputDir, dryRun, nil
+}
+
+func parseOptionalBool(value string) (bool, error) {
+	switch value {
+	case "", "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid boolean %q (expected true or false)", value)
+	}
+}
+
+func printCreateDryRun(files []scaffold.GeneratedFile, outputDir string) {
+	fmt.Printf("Would create %d files in %s/:\n\n", len(files), outputDir)
+	for i := range files {
+		fmt.Printf("  📄 %s (%d bytes)\n", files[i].Path, len(files[i].Content))
+	}
+}
+
+func writeProjectFiles(files []scaffold.GeneratedFile, outputDir string) error {
+	for i := range files {
+		fullPath := filepath.Join(outputDir, files[i].Path)
+		dir := filepath.Dir(fullPath)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			printPartialProjectWarning(i, len(files), outputDir)
+			return fmt.Errorf("creating directory %s: %w\n\nHint: check directory permissions and available disk space", dir, err)
+		}
+		err := fileutil.WriteAtomic(fullPath, 0o644, func(writer io.Writer) error {
+			_, err := io.WriteString(writer, files[i].Content)
+			return err
+		})
+		if err != nil {
+			printPartialProjectWarning(i, len(files), outputDir)
+			return fmt.Errorf("writing %s: %w\n\nHint: check available disk space and file permissions", fullPath, err)
+		}
+	}
+	return nil
+}
+
+func printPartialProjectWarning(created, total int, outputDir string) {
+	if created > 0 {
+		fmt.Fprintf(os.Stderr, "⚠️  Partial project created (%d/%d files). Clean up with: rm -rf %s\n", created, total, outputDir)
+	}
+}
+
+func printCreateNextSteps(language scaffold.Language, name, outputDir string) {
 	fmt.Printf("Next steps:\n")
 	fmt.Printf("  cd %s\n", outputDir)
 	fmt.Printf("  docker compose up -d\n")
 
-	switch cfg.Language {
+	switch language {
 	case scaffold.LangGo:
 		fmt.Printf("  go run ./cmd/worker\n")
 	case scaffold.LangTypeScript:
@@ -141,8 +222,6 @@ func CreateProject(args []string) error {
 	case scaffold.LangDotNet:
 		fmt.Printf("  dotnet run --project Worker\n")
 	}
-
-	return nil
 }
 
 // CreateProjectJSON generates scaffold output as JSON (for programmatic use).

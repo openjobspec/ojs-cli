@@ -3,9 +3,14 @@ package commands
 import (
 	"flag"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"text/template"
+
+	"github.com/openjobspec/ojs-cli/internal/fileutil"
+	"github.com/openjobspec/ojs-cli/internal/redact"
 )
 
 // RunSetupCommand dispatches to setup subcommands.
@@ -35,10 +40,45 @@ Run 'ojs setup <subcommand> --help' for details.
 }
 
 func setupObservability(args []string) error {
-	fs := flag.NewFlagSet("setup observability", flag.ExitOnError)
-	outputDir := fs.String("output-dir", "./monitoring", "Directory to write monitoring configs")
-	ojsURL := fs.String("ojs-url", "http://localhost:8080", "OJS server URL for Prometheus scraping")
-	promURL := fs.String("prometheus-url", "http://prometheus:9090", "Prometheus URL for Grafana datasource")
+	options, err := parseObservabilityOptions(args)
+	if err != nil {
+		return err
+	}
+	data, err := observabilityTemplateData(options)
+	if err != nil {
+		return err
+	}
+	if err := createObservabilityDirectories(options.outputDir); err != nil {
+		return err
+	}
+	for _, artifact := range observabilityArtifacts(options.outputDir) {
+		if err := writeObservabilityArtifact(artifact, data); err != nil {
+			return err
+		}
+		fmt.Printf("  ✓ %s\n", artifact.path)
+	}
+
+	printObservabilitySummary(options)
+	return nil
+}
+
+type observabilityOptions struct {
+	outputDir     string
+	ojsURL        string
+	prometheusURL string
+}
+
+type observabilityArtifact struct {
+	path     string
+	template string
+}
+
+func parseObservabilityOptions(args []string) (observabilityOptions, error) {
+	options := observabilityOptions{}
+	fs := flag.NewFlagSet("setup observability", flag.ContinueOnError)
+	fs.StringVar(&options.outputDir, "output-dir", "./monitoring", "Directory to write monitoring configs")
+	fs.StringVar(&options.ojsURL, "ojs-url", "http://localhost:8080", "OJS server URL for Prometheus scraping")
+	fs.StringVar(&options.prometheusURL, "prometheus-url", "http://prometheus:9090", "Prometheus URL for Grafana datasource")
 	fs.Usage = func() {
 		fmt.Print(`Usage: ojs setup observability [flags]
 
@@ -55,53 +95,71 @@ Flags:
 `)
 	}
 	if err := fs.Parse(args); err != nil {
-		return err
+		return observabilityOptions{}, fmt.Errorf("parse flags: %w", err)
 	}
+	return options, nil
+}
 
+func createObservabilityDirectories(outputDir string) error {
 	dirs := []string{
-		filepath.Join(*outputDir, "grafana", "dashboards"),
-		filepath.Join(*outputDir, "grafana", "provisioning", "dashboards"),
-		filepath.Join(*outputDir, "grafana", "provisioning", "datasources"),
-		filepath.Join(*outputDir, "prometheus", "rules"),
+		filepath.Join(outputDir, "grafana", "dashboards"),
+		filepath.Join(outputDir, "grafana", "provisioning", "dashboards"),
+		filepath.Join(outputDir, "grafana", "provisioning", "datasources"),
+		filepath.Join(outputDir, "prometheus", "rules"),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("create directory %s: %w", d, err)
 		}
 	}
+	return nil
+}
 
-	files := map[string]string{
-		filepath.Join(*outputDir, "docker-compose.yml"):                                          dockerComposeTmpl,
-		filepath.Join(*outputDir, "prometheus", "prometheus.yml"):                                prometheusTmpl,
-		filepath.Join(*outputDir, "prometheus", "rules", "ojs-recording.yml"):                    recordingRulesTmpl,
-		filepath.Join(*outputDir, "prometheus", "rules", "ojs-alerting.yml"):                     alertingRulesTmpl,
-		filepath.Join(*outputDir, "grafana", "provisioning", "datasources", "prometheus.yml"):    grafanaDatasourceTmpl,
-		filepath.Join(*outputDir, "grafana", "provisioning", "dashboards", "ojs-dashboards.yml"): grafanaDashboardProvTmpl,
-		filepath.Join(*outputDir, "grafana", "dashboards", "ojs-overview.json"):                  overviewDashboard,
+func observabilityArtifacts(outputDir string) []observabilityArtifact {
+	return []observabilityArtifact{
+		{path: filepath.Join(outputDir, "docker-compose.yml"), template: dockerComposeTmpl},
+		{path: filepath.Join(outputDir, "prometheus", "prometheus.yml"), template: prometheusTmpl},
+		{path: filepath.Join(outputDir, "prometheus", "rules", "ojs-recording.yml"), template: recordingRulesTmpl},
+		{path: filepath.Join(outputDir, "prometheus", "rules", "ojs-alerting.yml"), template: alertingRulesTmpl},
+		{path: filepath.Join(outputDir, "grafana", "provisioning", "datasources", "prometheus.yml"), template: grafanaDatasourceTmpl},
+		{path: filepath.Join(outputDir, "grafana", "provisioning", "dashboards", "ojs-dashboards.yml"), template: grafanaDashboardProvTmpl},
+		{path: filepath.Join(outputDir, "grafana", "dashboards", "ojs-overview.json"), template: overviewDashboard},
 	}
+}
 
-	data := map[string]string{
-		"OJSURL":        *ojsURL,
-		"PrometheusURL": *promURL,
+func observabilityTemplateData(options observabilityOptions) (map[string]string, error) {
+	ojsURL, err := url.Parse(options.ojsURL)
+	if err != nil || ojsURL.Scheme == "" || ojsURL.Host == "" {
+		return nil, fmt.Errorf("invalid --ojs-url %q", redact.URL(options.ojsURL))
 	}
-
-	for path, tmplStr := range files {
-		tmpl, err := template.New(filepath.Base(path)).Parse(tmplStr)
-		if err != nil {
-			return fmt.Errorf("parse template for %s: %w", path, err)
-		}
-		f, err := os.Create(path)
-		if err != nil {
-			return fmt.Errorf("create %s: %w", path, err)
-		}
-		if err := tmpl.Execute(f, data); err != nil {
-			f.Close()
-			return fmt.Errorf("write %s: %w", path, err)
-		}
-		f.Close()
-		fmt.Printf("  ✓ %s\n", path)
+	if ojsURL.Scheme != "http" && ojsURL.Scheme != "https" {
+		return nil, fmt.Errorf("unsupported --ojs-url scheme %q", ojsURL.Scheme)
 	}
+	return map[string]string{
+		"OJSScheme":     ojsURL.Scheme,
+		"OJSTarget":     ojsURL.Host,
+		"PrometheusURL": options.prometheusURL,
+	}, nil
+}
 
+func writeObservabilityArtifact(artifact observabilityArtifact, data map[string]string) error {
+	tmpl, err := template.New(filepath.Base(artifact.path)).Parse(artifact.template)
+	if err != nil {
+		return fmt.Errorf("parse template for %s: %w", artifact.path, err)
+	}
+	err = fileutil.WriteAtomic(artifact.path, 0o644, func(writer io.Writer) error {
+		if err := tmpl.Execute(writer, data); err != nil {
+			return fmt.Errorf("render template: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("write %s: %w", artifact.path, err)
+	}
+	return nil
+}
+
+func printObservabilitySummary(options observabilityOptions) {
 	fmt.Printf(`
 ╔══════════════════════════════════════════════╗
 ║  📊 OJS Observability Stack Generated        ║
@@ -120,9 +178,7 @@ Flags:
 ║    %s
 ║                                              ║
 ╚══════════════════════════════════════════════╝
-`, *outputDir, *ojsURL)
-
-	return nil
+`, options.outputDir, redact.URL(options.ojsURL))
 }
 
 var dockerComposeTmpl = `services:
@@ -160,10 +216,11 @@ rule_files:
 
 scrape_configs:
   - job_name: ojs
+    scheme: "{{.OJSScheme}}"
     metrics_path: /metrics
     static_configs:
       - targets:
-          - "{{.OJSURL}}"
+          - "{{.OJSTarget}}"
         labels:
           service: ojs
 `
@@ -198,7 +255,7 @@ var alertingRulesTmpl = `groups:
           severity: warning
         annotations:
           summary: "OJS enqueue p99 latency exceeds 50ms SLO"
-          description: "Current p99: {{`+"`"+`{{ $value | humanizeDuration }}`+"`"+`}}"
+          description: "Current p99: {{` + "`" + `{{ $value | humanizeDuration }}` + "`" + `}}"
 
       - alert: OJSProcessingLatencyHigh
         expr: ojs:process:latency_p99 > 5

@@ -30,10 +30,12 @@ func Workflow(c *client.Client, args []string) error {
 }
 
 func workflowCreate(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("workflow create", flag.ExitOnError)
+	fs := flag.NewFlagSet("workflow create", flag.ContinueOnError)
 	name := fs.String("name", "", "Workflow name (required)")
 	stepsJSON := fs.String("steps", "", "Steps as JSON array (required)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	if *name == "" || *stepsJSON == "" {
 		return fmt.Errorf("--name and --steps are required\n\n" +
@@ -58,13 +60,13 @@ func workflowCreate(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var wf map[string]any
-	json.Unmarshal(data, &wf)
+	if err := decodeResponse(data, &wf); err != nil {
+		return err
+	}
 	output.Success("Workflow created: %s (id=%s, state=%s)", *name, str(wf["id"]), str(wf["state"]))
 	return nil
 }
@@ -81,9 +83,7 @@ func workflowStatus(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var wf struct {
@@ -101,7 +101,9 @@ func workflowStatus(c *client.Client, args []string) error {
 		CreatedAt   string `json:"created_at"`
 		CompletedAt string `json:"completed_at"`
 	}
-	json.Unmarshal(data, &wf)
+	if err := decodeResponse(data, &wf); err != nil {
+		return err
+	}
 
 	fmt.Printf("Workflow: %s (%s)\n", wf.Name, wf.ID)
 	fmt.Printf("State:    %s\n", wf.State)
@@ -147,22 +149,24 @@ func workflowCancel(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp map[string]any
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 	output.Success("Workflow %s cancelled (cancelled_steps=%s)", wfID, str(resp["cancelled_steps"]))
 	return nil
 }
 
 func workflowList(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("workflow list", flag.ExitOnError)
+	fs := flag.NewFlagSet("workflow list", flag.ContinueOnError)
 	limit := fs.Int("limit", 25, "Max results to return")
 	state := fs.String("state", "", "Filter by state (running, completed, failed, cancelled)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	path := fmt.Sprintf("/workflows?limit=%d", *limit)
 	if *state != "" {
@@ -175,9 +179,7 @@ func workflowList(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
@@ -191,7 +193,9 @@ func workflowList(c *client.Client, args []string) error {
 		} `json:"workflows"`
 		Total int `json:"total"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	fmt.Printf("Workflows: %d total\n\n", resp.Total)
 

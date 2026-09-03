@@ -8,12 +8,14 @@ import (
 	"os"
 )
 
+const maxValidationRecordBytes = 4 << 20
+
 // ValidationResult holds the outcome of validating an exported NDJSON file.
 type ValidationResult struct {
-	Total    int              `json:"total"`
-	Valid    int              `json:"valid"`
-	Invalid  int              `json:"invalid"`
-	Errors   []ValidationError `json:"errors,omitempty"`
+	Total   int               `json:"total"`
+	Valid   int               `json:"valid"`
+	Invalid int               `json:"invalid"`
+	Errors  []ValidationError `json:"errors,omitempty"`
 }
 
 // ValidationError describes a single validation failure.
@@ -35,6 +37,7 @@ func ValidateFile(filename string) (*ValidationResult, error) {
 
 func validateFromReader(r io.Reader) (*ValidationResult, error) {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), maxValidationRecordBytes)
 	result := &ValidationResult{}
 	lineNum := 0
 

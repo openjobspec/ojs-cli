@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 
@@ -11,14 +10,16 @@ import (
 
 // DeadLetter manages the dead letter queue.
 func DeadLetter(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("dead-letter", flag.ExitOnError)
+	fs := flag.NewFlagSet("dead-letter", flag.ContinueOnError)
 	retryID := fs.String("retry", "", "Retry a dead letter job by ID")
 	deleteID := fs.String("delete", "", "Delete a dead letter job by ID")
 	limit := fs.Int("limit", 25, "Max results to return")
 	purge := fs.Bool("purge", false, "Purge all dead letter jobs")
 	stats := fs.Bool("stats", false, "Show dead letter queue statistics")
 	olderThan := fs.String("older-than", "", "Purge jobs older than duration (e.g. 7d, 24h)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	if *stats {
 		return deadLetterStats(c)
@@ -34,9 +35,7 @@ func DeadLetter(c *client.Client, args []string) error {
 			return err
 		}
 		if output.Format == "json" {
-			var result any
-			json.Unmarshal(data, &result)
-			return output.JSON(result)
+			return printJSONResponse(data)
 		}
 		output.Success("Dead letter job %s retried", *retryID)
 		return nil
@@ -61,16 +60,16 @@ func listDeadLetter(c *client.Client, limit int) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
 		Jobs  []map[string]any `json:"jobs"`
 		Total int              `json:"total"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	fmt.Printf("Dead letter jobs: %d total\n\n", resp.Total)
 
@@ -98,17 +97,17 @@ func deadLetterStats(c *client.Client) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
-		Total    int `json:"total"`
-		ByQueue  map[string]int `json:"by_queue"`
-		ByType   map[string]int `json:"by_type"`
+		Total   int            `json:"total"`
+		ByQueue map[string]int `json:"by_queue"`
+		ByType  map[string]int `json:"by_type"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	fmt.Printf("Dead letter statistics: %d total\n\n", resp.Total)
 
@@ -148,15 +147,15 @@ func deadLetterPurge(c *client.Client, olderThan string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
 		Deleted int `json:"deleted"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 	output.Success("Purged %d dead letter jobs", resp.Deleted)
 	return nil
 }

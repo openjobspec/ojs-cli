@@ -104,10 +104,9 @@ func ParseTemporalGo(source string) ([]WorkflowDef, []string) {
 // --- Airflow Parsing ---
 
 var (
-	airflowDagRe      = regexp.MustCompile(`(?m)DAG\(\s*['"]([^'"]+)['"]`)
-	airflowTaskRe     = regexp.MustCompile(`(?m)(\w+)\s*=\s*(?:PythonOperator|BashOperator|KubernetesPodOperator|SimpleHttpOperator|EmailOperator)\(\s*\n?\s*task_id\s*=\s*['"]([^'"]+)['"]`)
-	airflowDepRe      = regexp.MustCompile(`(?m)(\w+)\s*>>\s*(\w+)`)
-	airflowDepListRe  = regexp.MustCompile(`(?m)\[([^\]]+)\]\s*>>\s*(\w+)`)
+	airflowDagRe  = regexp.MustCompile(`(?m)DAG\(\s*['"]([^'"]+)['"]`)
+	airflowTaskRe = regexp.MustCompile(`(?m)(\w+)\s*=\s*(?:PythonOperator|BashOperator|KubernetesPodOperator|SimpleHttpOperator|EmailOperator)\(\s*\n?\s*task_id\s*=\s*['"]([^'"]+)['"]`)
+	airflowDepRe  = regexp.MustCompile(`(?m)(\w+)\s*>>\s*(\w+)`)
 )
 
 // ParseAirflowDAG parses a Python Airflow DAG file.
@@ -172,8 +171,10 @@ func ToOJSYAML(workflows []WorkflowDef) string {
 	b.WriteString("job_types:\n")
 
 	seen := make(map[string]bool)
-	for _, wf := range workflows {
-		for _, step := range wf.Steps {
+	for i := range workflows {
+		wf := &workflows[i]
+		for j := range wf.Steps {
+			step := &wf.Steps[j]
 			if seen[step.JobType] {
 				continue
 			}
@@ -199,7 +200,8 @@ func ToOJSYAML(workflows []WorkflowDef) string {
 	}
 
 	// Generate workflow definitions
-	for _, wf := range workflows {
+	for i := range workflows {
+		wf := &workflows[i]
 		if len(wf.Steps) < 2 {
 			continue
 		}
@@ -212,7 +214,8 @@ func ToOJSYAML(workflows []WorkflowDef) string {
 			b.WriteString("#   --type chain \\\n")
 		}
 
-		for _, step := range wf.Steps {
+		for j := range wf.Steps {
+			step := &wf.Steps[j]
 			b.WriteString(fmt.Sprintf("#   --step %s \\\n", step.JobType))
 		}
 	}

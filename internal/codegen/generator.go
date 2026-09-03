@@ -3,11 +3,14 @@ package codegen
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"text/template"
 	"unicode"
+
+	"github.com/openjobspec/ojs-cli/internal/fileutil"
 )
 
 // Language represents a target language for code generation.
@@ -81,7 +84,7 @@ func (g *Generator) generateGo() error {
 	}
 
 	outPath := filepath.Join(g.outDir, "ojs_generated.go")
-	return os.WriteFile(outPath, buf.Bytes(), 0o644)
+	return writeGeneratedSource(outPath, buf.Bytes())
 }
 
 // --- TypeScript Code Generation ---
@@ -102,7 +105,7 @@ func (g *Generator) generateTypeScript() error {
 	}
 
 	outPath := filepath.Join(g.outDir, "ojs-generated.ts")
-	return os.WriteFile(outPath, buf.Bytes(), 0o644)
+	return writeGeneratedSource(outPath, buf.Bytes())
 }
 
 // --- Python Code Generation ---
@@ -123,7 +126,7 @@ func (g *Generator) generatePython() error {
 	}
 
 	outPath := filepath.Join(g.outDir, "ojs_generated.py")
-	return os.WriteFile(outPath, buf.Bytes(), 0o644)
+	return writeGeneratedSource(outPath, buf.Bytes())
 }
 
 // --- Naming Helpers ---
@@ -325,7 +328,8 @@ async def enqueue_{{ snakeCase .Type }}(client: "OJSClient", args: {{ pascalCase
 // --- Java Code Generation ---
 
 func (g *Generator) generateJava() error {
-	for _, jt := range g.manifest.JobTypes {
+	for i := range g.manifest.JobTypes {
+		jt := &g.manifest.JobTypes[i]
 		tmpl, err := template.New("java").Funcs(template.FuncMap{
 			"pascalCase": toPascalCase,
 			"camelCase":  toCamelCase,
@@ -339,7 +343,7 @@ func (g *Generator) generateJava() error {
 			return fmt.Errorf("executing Java template: %w", err)
 		}
 		outPath := filepath.Join(g.outDir, toPascalCase(jt.Type)+"Jobs.java")
-		if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
+		if err := writeGeneratedSource(outPath, buf.Bytes()); err != nil {
 			return err
 		}
 	}
@@ -387,7 +391,7 @@ func (g *Generator) generateRust() error {
 	if err := tmpl.Execute(&buf, g.manifest); err != nil {
 		return fmt.Errorf("executing Rust template: %w", err)
 	}
-	return os.WriteFile(filepath.Join(g.outDir, "ojs_generated.rs"), buf.Bytes(), 0o644)
+	return writeGeneratedSource(filepath.Join(g.outDir, "ojs_generated.rs"), buf.Bytes())
 }
 
 func toRustType(t string) string {
@@ -431,7 +435,7 @@ func (g *Generator) generateRuby() error {
 	if err := tmpl.Execute(&buf, g.manifest); err != nil {
 		return fmt.Errorf("executing Ruby template: %w", err)
 	}
-	return os.WriteFile(filepath.Join(g.outDir, "ojs_generated.rb"), buf.Bytes(), 0o644)
+	return writeGeneratedSource(filepath.Join(g.outDir, "ojs_generated.rb"), buf.Bytes())
 }
 
 var rubyTemplate = `# frozen_string_literal: true
@@ -462,7 +466,14 @@ func (g *Generator) generateDotNet() error {
 	if err := tmpl.Execute(&buf, g.manifest); err != nil {
 		return fmt.Errorf("executing .NET template: %w", err)
 	}
-	return os.WriteFile(filepath.Join(g.outDir, "OjsGenerated.cs"), buf.Bytes(), 0o644)
+	return writeGeneratedSource(filepath.Join(g.outDir, "OjsGenerated.cs"), buf.Bytes())
+}
+
+func writeGeneratedSource(path string, data []byte) error {
+	return fileutil.WriteAtomic(path, 0o644, func(writer io.Writer) error {
+		_, err := writer.Write(data)
+		return err
+	})
 }
 
 func toCSharpType(t string) string {
@@ -490,4 +501,3 @@ public record {{ pascalCase .Type }}Args(
     {{ csharpType .Type }} {{ pascalCase .Name }}{{ end }}
 );
 {{ end }}`
-

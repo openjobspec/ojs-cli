@@ -64,3 +64,54 @@ func TestJSON(t *testing.T) {
 		t.Error("output missing value field")
 	}
 }
+
+func TestPrintResultAndMessages(t *testing.T) {
+	oldOut, oldErr := os.Stdout, os.Stderr
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout, os.Stderr = outW, errW
+	t.Cleanup(func() {
+		os.Stdout, os.Stderr = oldOut, oldErr
+	})
+
+	Format = "table"
+	err = PrintResult([]any{"one", "two"}, []string{"VALUE"}, func(value any) []string {
+		return []string{value.(string)}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	Success("done %d", 2)
+	Warn("warning %s", "here")
+
+	Format = "json"
+	if err := PrintResult(map[string]int{"count": 2}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := outW.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := errW.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if _, err := stdout.ReadFrom(outR); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stderr.ReadFrom(errR); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "one") || !strings.Contains(stdout.String(), "✓ done 2") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "⚠ warning here") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}

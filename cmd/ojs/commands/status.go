@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 
@@ -11,9 +10,11 @@ import (
 
 // Status retrieves the status of a job.
 func Status(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	detail := fs.Bool("detail", false, "Show full job envelope with args, meta, and errors")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	remaining := fs.Args()
 	if len(remaining) == 0 {
@@ -32,15 +33,23 @@ func Status(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var job map[string]any
-	json.Unmarshal(data, &job)
+	if err := decodeResponse(data, &job); err != nil {
+		return err
+	}
 
-	headers := []string{"FIELD", "VALUE"}
+	rows, err := statusRows(job)
+	if err != nil {
+		return err
+	}
+	output.Table([]string{"FIELD", "VALUE"}, rows)
+	return nil
+}
+
+func statusRows(job map[string]any) ([][]string, error) {
 	rows := [][]string{
 		{"ID", str(job["id"])},
 		{"Type", str(job["type"])},
@@ -60,14 +69,16 @@ func Status(c *client.Client, args []string) error {
 		rows = append(rows, []string{"Progress", fmt.Sprintf("%.0f%%", toFloat(job["progress"])*100)})
 	}
 	if job["progress_data"] != nil {
-		progressJSON, _ := json.Marshal(job["progress_data"])
-		rows = append(rows, []string{"Progress Data", string(progressJSON)})
+		progressJSON, err := formatJSONValue(job["progress_data"])
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, []string{"Progress Data", progressJSON})
 	}
 	if job["error"] != nil {
 		rows = append(rows, []string{"Error", str(job["error"])})
 	}
-	output.Table(headers, rows)
-	return nil
+	return rows, nil
 }
 
 func str(v any) string {
@@ -95,15 +106,23 @@ func jobDetail(c *client.Client, jobID string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var job map[string]any
-	json.Unmarshal(data, &job)
+	if err := decodeResponse(data, &job); err != nil {
+		return err
+	}
 
-	headers := []string{"FIELD", "VALUE"}
+	rows, err := detailedJobRows(job)
+	if err != nil {
+		return err
+	}
+	output.Table([]string{"FIELD", "VALUE"}, rows)
+	return nil
+}
+
+func detailedJobRows(job map[string]any) ([][]string, error) {
 	rows := [][]string{
 		{"ID", str(job["id"])},
 		{"Type", str(job["type"])},
@@ -113,42 +132,37 @@ func jobDetail(c *client.Client, jobID string) error {
 		{"Priority", str(job["priority"])},
 		{"Created", str(job["created_at"])},
 	}
-	if job["args"] != nil {
-		argsJSON, _ := json.Marshal(job["args"])
-		rows = append(rows, []string{"Args", string(argsJSON)})
+	for _, field := range []struct {
+		key    string
+		label  string
+		format string
+	}{
+		{key: "args", label: "Args", format: "json"},
+		{key: "meta", label: "Meta", format: "json"},
+		{key: "options", label: "Options", format: "json"},
+		{key: "scheduled_at", label: "Scheduled"},
+		{key: "started_at", label: "Started"},
+		{key: "completed_at", label: "Completed"},
+		{key: "progress", label: "Progress", format: "progress"},
+		{key: "result", label: "Result", format: "json"},
+		{key: "error", label: "Error"},
+		{key: "errors", label: "Error History", format: "json"},
+	} {
+		if job[field.key] == nil {
+			continue
+		}
+		value := str(job[field.key])
+		switch field.format {
+		case "json":
+			formatted, err := formatJSONValue(job[field.key])
+			if err != nil {
+				return nil, err
+			}
+			value = formatted
+		case "progress":
+			value = fmt.Sprintf("%.0f%%", toFloat(job[field.key])*100)
+		}
+		rows = append(rows, []string{field.label, value})
 	}
-	if job["meta"] != nil {
-		metaJSON, _ := json.Marshal(job["meta"])
-		rows = append(rows, []string{"Meta", string(metaJSON)})
-	}
-	if job["options"] != nil {
-		optsJSON, _ := json.Marshal(job["options"])
-		rows = append(rows, []string{"Options", string(optsJSON)})
-	}
-	if job["scheduled_at"] != nil {
-		rows = append(rows, []string{"Scheduled", str(job["scheduled_at"])})
-	}
-	if job["started_at"] != nil {
-		rows = append(rows, []string{"Started", str(job["started_at"])})
-	}
-	if job["completed_at"] != nil {
-		rows = append(rows, []string{"Completed", str(job["completed_at"])})
-	}
-	if job["progress"] != nil {
-		rows = append(rows, []string{"Progress", fmt.Sprintf("%.0f%%", toFloat(job["progress"])*100)})
-	}
-	if job["result"] != nil {
-		resultJSON, _ := json.Marshal(job["result"])
-		rows = append(rows, []string{"Result", string(resultJSON)})
-	}
-	if job["error"] != nil {
-		rows = append(rows, []string{"Error", str(job["error"])})
-	}
-	if job["errors"] != nil {
-		errorsJSON, _ := json.Marshal(job["errors"])
-		rows = append(rows, []string{"Error History", string(errorsJSON)})
-	}
-	output.Table(headers, rows)
-	return nil
+	return rows, nil
 }
-

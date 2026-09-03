@@ -1,13 +1,15 @@
 package migrate
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
+	"github.com/openjobspec/ojs-cli/internal/redact"
 	"github.com/redis/go-redis/v9"
-	"golang.org/x/net/context"
 )
 
 // CelerySource reads jobs from a Celery broker backed by Redis.
@@ -21,7 +23,7 @@ type CelerySource struct {
 func NewCelerySource(redisURL string) (*CelerySource, error) {
 	opts, err := redis.ParseURL(redisURL)
 	if err != nil {
-		return nil, fmt.Errorf("invalid redis URL: %w", err)
+		return nil, fmt.Errorf("invalid redis URL %q: %w", redact.URL(redisURL), err)
 	}
 	return &CelerySource{
 		rdb:    redis.NewClient(opts),
@@ -36,8 +38,8 @@ func (c *CelerySource) Close() error {
 }
 
 type celeryMessage struct {
-	Body    string         `json:"body"`
-	Headers celeryHeaders  `json:"headers"`
+	Body    string        `json:"body"`
+	Headers celeryHeaders `json:"headers"`
 }
 
 type celeryHeaders struct {
@@ -51,19 +53,18 @@ func (c *CelerySource) Analyze() (*AnalysisResult, error) {
 
 	result := &AnalysisResult{
 		Source:     "celery",
-		Connection: c.url,
+		Connection: redact.URL(c.url),
 	}
 
-	// Try to discover queues by scanning known Celery key patterns
-	discoveredQueues := c.discoverQueues(ctx)
-	if len(discoveredQueues) == 0 {
-		discoveredQueues = c.queues
+	discoveredQueues, err := c.discoverQueues(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	for _, q := range discoveredQueues {
 		qa, count, err := c.analyzeQueue(ctx, q)
 		if err != nil {
-			continue
+			return nil, err
 		}
 		result.Queues = append(result.Queues, *qa)
 		result.TotalJobs += count
@@ -73,7 +74,7 @@ func (c *CelerySource) Analyze() (*AnalysisResult, error) {
 	return result, nil
 }
 
-func (c *CelerySource) discoverQueues(ctx context.Context) []string {
+func (c *CelerySource) discoverQueues(ctx context.Context) ([]string, error) {
 	// Celery stores tasks in list keys. Check default queue and
 	// try _kombu.binding.* for additional queue names.
 	seen := make(map[string]bool)
@@ -86,7 +87,7 @@ func (c *CelerySource) discoverQueues(ctx context.Context) []string {
 	for {
 		keys, next, err := c.rdb.Scan(ctx, cursor, "_kombu.binding.*", 10).Result()
 		if err != nil {
-			break
+			return nil, fmt.Errorf("scan for Celery queues: %w", err)
 		}
 		for _, key := range keys {
 			// _kombu.binding.<queue>
@@ -105,7 +106,8 @@ func (c *CelerySource) discoverQueues(ctx context.Context) []string {
 	for q := range seen {
 		queues = append(queues, q)
 	}
-	return queues
+	sort.Strings(queues)
+	return queues, nil
 }
 
 func (c *CelerySource) analyzeQueue(ctx context.Context, name string) (*QueueAnalysis, int, error) {
@@ -134,25 +136,34 @@ func (c *CelerySource) Export() ([]ExportedJob, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	discoveredQueues := c.discoverQueues(ctx)
-	if len(discoveredQueues) == 0 {
-		discoveredQueues = c.queues
+	discoveredQueues, err := c.discoverQueues(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	var exported []ExportedJob
+	var failures []FailedRecord
 
 	for _, q := range discoveredQueues {
 		messages, err := c.rdb.LRange(ctx, q, 0, -1).Result()
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("read celery queue %s: %w", q, err)
 		}
-		for _, raw := range messages {
-			if ej, err := parseCeleryMessage(q, raw); err == nil {
-				exported = append(exported, *ej)
+		for i, raw := range messages {
+			job, parseErr := parseCeleryMessage(q, raw)
+			if parseErr != nil {
+				failures = append(failures, FailedRecord{
+					Source: "celery", Queue: q, Structure: "list", Index: i + 1, Error: parseErr.Error(),
+				})
+				continue
 			}
+			exported = append(exported, *job)
 		}
 	}
 
+	if len(failures) > 0 {
+		return exported, &PartialExportError{Exported: len(exported), Failures: failures}
+	}
 	return exported, nil
 }
 
@@ -183,13 +194,12 @@ func parseCeleryMessage(queue, raw string) (*ExportedJob, error) {
 	// Decode body: base64-encoded JSON [args, kwargs, embed]
 	if msg.Body != "" {
 		args, kwargs, err := decodeCeleryBody(msg.Body)
-		if err == nil {
-			ej.Args = args
-			if kwargs != nil {
-				ej.Meta["celery_kwargs"] = kwargs
-			}
-		} else {
-			ej.Args = json.RawMessage("[]")
+		if err != nil {
+			return nil, fmt.Errorf("decode celery body: %w", err)
+		}
+		ej.Args = args
+		if kwargs != nil {
+			ej.Meta["celery_kwargs"] = kwargs
 		}
 	} else {
 		ej.Args = json.RawMessage("[]")
@@ -224,7 +234,9 @@ func decodeCeleryBodyRaw(raw string) (json.RawMessage, map[string]any, error) {
 
 	var kwargs map[string]any
 	if len(parts) > 1 {
-		json.Unmarshal(parts[1], &kwargs)
+		if err := json.Unmarshal(parts[1], &kwargs); err != nil {
+			return json.RawMessage("[]"), nil, fmt.Errorf("decode kwargs: %w", err)
+		}
 	}
 
 	return args, kwargs, nil

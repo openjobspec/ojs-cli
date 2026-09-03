@@ -3,9 +3,12 @@ package livemigrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	rootmigrate "github.com/openjobspec/ojs-cli/internal/migrate"
 )
 
 func TestMigrationDryRun(t *testing.T) {
@@ -29,7 +32,7 @@ func TestMigrationDryRun(t *testing.T) {
 	}))
 	defer target.Close()
 
-	m := New(Config{
+	m := New(&Config{
 		SourceURL: source.URL,
 		TargetURL: target.URL,
 		DryRun:    true,
@@ -77,7 +80,7 @@ func TestMigrationActual(t *testing.T) {
 	}))
 	defer target.Close()
 
-	m := New(Config{SourceURL: source.URL, TargetURL: target.URL})
+	m := New(&Config{SourceURL: source.URL, TargetURL: target.URL})
 	err := m.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -103,7 +106,7 @@ func TestMigrationSourceFailure(t *testing.T) {
 	}))
 	defer source.Close()
 
-	m := New(Config{SourceURL: source.URL, TargetURL: "http://unused:8080"})
+	m := New(&Config{SourceURL: source.URL, TargetURL: "http://unused:8080"})
 	err := m.Run(context.Background())
 	if err == nil {
 		t.Error("expected error for source failure")
@@ -126,7 +129,7 @@ func TestMigrationTargetHealthFailure(t *testing.T) {
 	}))
 	defer target.Close()
 
-	m := New(Config{SourceURL: source.URL, TargetURL: target.URL})
+	m := New(&Config{SourceURL: source.URL, TargetURL: target.URL})
 	err := m.Run(context.Background())
 	if err == nil {
 		t.Error("expected error for unhealthy target")
@@ -134,9 +137,73 @@ func TestMigrationTargetHealthFailure(t *testing.T) {
 }
 
 func TestStatsSnapshot(t *testing.T) {
-	m := New(Config{SourceURL: "http://a", TargetURL: "http://b"})
+	m := New(&Config{SourceURL: "http://a", TargetURL: "http://b"})
 	stats := m.GetStats()
 	if stats.Phase != PhaseIdle {
 		t.Errorf("expected idle, got %s", stats.Phase)
+	}
+}
+
+func TestMigrationMixedImportOutcomeIsPartial(t *testing.T) {
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jobs": []map[string]any{
+				{"type": "one", "queue": "default", "args": []any{}},
+				{"type": "two", "queue": "default", "args": []any{}},
+			},
+		})
+	}))
+	defer source.Close()
+
+	var posts int
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			posts++
+			if posts == 2 {
+				http.Error(w, "rejected", http.StatusUnprocessableEntity)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		http.Error(w, "verification should not run", http.StatusInternalServerError)
+	}))
+	defer target.Close()
+
+	m := New(&Config{SourceURL: source.URL, TargetURL: target.URL})
+	err := m.Run(context.Background())
+	var partial *rootmigrate.PartialFailureError
+	if !errors.As(err, &partial) {
+		t.Fatalf("Run() error = %v, want PartialFailureError", err)
+	}
+	stats := m.GetStats()
+	if stats.Phase != PhasePartial || stats.Imported != 1 || stats.Errors != 1 {
+		t.Fatalf("stats = %+v, want partial with one imported and one error", stats)
+	}
+	if stats.CompletedAt == nil || len(stats.Failures) != 1 {
+		t.Fatalf("terminal partial details missing: %+v", stats)
+	}
+}
+
+func TestMigrationTargetConnectionFailureIsPartial(t *testing.T) {
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jobs": []map[string]any{{"type": "one", "queue": "default", "args": []any{}}},
+		})
+	}))
+	defer source.Close()
+
+	target := httptest.NewServer(http.NotFoundHandler())
+	targetURL := target.URL
+	target.Close()
+
+	m := New(&Config{SourceURL: source.URL, TargetURL: targetURL})
+	err := m.Run(context.Background())
+	var partial *rootmigrate.PartialFailureError
+	if !errors.As(err, &partial) {
+		t.Fatalf("Run() error = %v, want PartialFailureError", err)
+	}
+	if stats := m.GetStats(); stats.Phase != PhasePartial {
+		t.Fatalf("phase = %s, want partial", stats.Phase)
 	}
 }

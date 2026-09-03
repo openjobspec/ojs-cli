@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 
@@ -11,7 +10,7 @@ import (
 
 // Queues lists queues and their stats.
 func Queues(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("queues", flag.ExitOnError)
+	fs := flag.NewFlagSet("queues", flag.ContinueOnError)
 	statsName := fs.String("stats", "", "Show detailed stats for a specific queue")
 	pause := fs.String("pause", "", "Pause a queue")
 	resume := fs.String("resume", "", "Resume a queue")
@@ -23,7 +22,9 @@ func Queues(c *client.Client, args []string) error {
 	purgeStates := fs.String("states", "completed", "States to purge (comma-separated)")
 	configQueue := fs.String("config", "", "Update configuration for a queue")
 	retention := fs.String("retention", "", "Retention duration (for config, e.g. 24h, 7d)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	if *configQueue != "" {
 		return updateQueueConfig(c, *configQueue, *concurrency, *maxSize, *retention)
@@ -73,9 +74,7 @@ func listQueues(c *client.Client) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
@@ -84,7 +83,9 @@ func listQueues(c *client.Client) error {
 			Status string `json:"status"`
 		} `json:"queues"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	headers := []string{"NAME", "STATUS"}
 	rows := make([][]string, 0, len(resp.Queues))
@@ -107,9 +108,7 @@ func queueStats(c *client.Client, name string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var stats struct {
@@ -124,7 +123,9 @@ func queueStats(c *client.Client, name string) error {
 			Dead      int `json:"dead"`
 		} `json:"stats"`
 	}
-	json.Unmarshal(data, &stats)
+	if err := decodeResponse(data, &stats); err != nil {
+		return err
+	}
 
 	headers := []string{"METRIC", "COUNT"}
 	rows := [][]string{
@@ -158,9 +159,7 @@ func createQueue(c *client.Client, name string, concurrency, maxSize int) error 
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	output.Success("Queue %q created", name)
@@ -187,15 +186,15 @@ func purgeQueue(c *client.Client, name, states string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
 		Deleted int `json:"deleted"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 	output.Success("Purged %d jobs from queue %q", resp.Deleted, name)
 	return nil
 }
@@ -242,9 +241,7 @@ func updateQueueConfig(c *client.Client, name string, concurrency, maxSize int, 
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	output.Success("Queue %q configuration updated", name)

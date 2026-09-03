@@ -1,11 +1,19 @@
 package migrate
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"sort"
 	"time"
+
+	"github.com/openjobspec/ojs-cli/internal/redact"
 )
+
+const maxFaktoryResponseBytes = 8 << 20
 
 // FaktorySource reads jobs from a Faktory server via its HTTP API.
 type FaktorySource struct {
@@ -41,19 +49,21 @@ type faktoryState struct {
 }
 
 type faktoryJob struct {
-	JID       string          `json:"jid"`
-	Type      string          `json:"jobtype"`
-	Args      json.RawMessage `json:"args"`
-	Queue     string          `json:"queue"`
-	Priority  int             `json:"priority,omitempty"`
-	At        string          `json:"at,omitempty"`
-	ReserveFor int            `json:"reserve_for,omitempty"`
-	Retry     int             `json:"retry,omitempty"`
-	Custom    map[string]any  `json:"custom,omitempty"`
+	JID        string          `json:"jid"`
+	Type       string          `json:"jobtype"`
+	Args       json.RawMessage `json:"args"`
+	Queue      string          `json:"queue"`
+	Priority   int             `json:"priority,omitempty"`
+	At         string          `json:"at,omitempty"`
+	ReserveFor int             `json:"reserve_for,omitempty"`
+	Retry      int             `json:"retry,omitempty"`
+	Custom     map[string]any  `json:"custom,omitempty"`
 }
 
 func (f *FaktorySource) doRequest(path string, target any) error {
-	req, err := http.NewRequest("GET", f.baseURL+path, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.baseURL+path, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -71,7 +81,17 @@ func (f *FaktorySource) doRequest(path string, target any) error {
 		return fmt.Errorf("request %s returned status %d", path, resp.StatusCode)
 	}
 
-	return json.NewDecoder(resp.Body).Decode(target)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxFaktoryResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+	if len(body) > maxFaktoryResponseBytes {
+		return fmt.Errorf("response exceeds %d bytes", maxFaktoryResponseBytes)
+	}
+	if err := json.Unmarshal(body, target); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
 }
 
 func (f *FaktorySource) Analyze() (*AnalysisResult, error) {
@@ -82,10 +102,16 @@ func (f *FaktorySource) Analyze() (*AnalysisResult, error) {
 
 	result := &AnalysisResult{
 		Source:     "faktory",
-		Connection: f.baseURL,
+		Connection: redact.URL(f.baseURL),
 	}
 
-	for name, count := range info.Faktory.Queues {
+	queueNames := make([]string, 0, len(info.Faktory.Queues))
+	for name := range info.Faktory.Queues {
+		queueNames = append(queueNames, name)
+	}
+	sort.Strings(queueNames)
+	for _, name := range queueNames {
+		count := info.Faktory.Queues[name]
 		qa := QueueAnalysis{
 			Name:        name,
 			PendingJobs: count,
@@ -109,14 +135,19 @@ func (f *FaktorySource) Export() ([]ExportedJob, error) {
 
 	var exported []ExportedJob
 
+	queueNames := make([]string, 0, len(info.Faktory.Queues))
 	for queueName := range info.Faktory.Queues {
+		queueNames = append(queueNames, queueName)
+	}
+	sort.Strings(queueNames)
+	for _, queueName := range queueNames {
 		var jobs []faktoryJob
-		if err := f.doRequest("/api/queues/"+queueName, &jobs); err != nil {
-			continue
+		if err := f.doRequest("/api/queues/"+url.PathEscape(queueName), &jobs); err != nil {
+			return nil, fmt.Errorf("fetch Faktory queue %s: %w", queueName, err)
 		}
 
-		for _, fj := range jobs {
-			ej := parseFaktoryJob(fj)
+		for i := range jobs {
+			ej := parseFaktoryJob(&jobs[i])
 			exported = append(exported, *ej)
 		}
 	}
@@ -131,10 +162,10 @@ func ParseFaktoryJob(raw string) (*ExportedJob, error) {
 	if err := json.Unmarshal([]byte(raw), &fj); err != nil {
 		return nil, fmt.Errorf("parse faktory job: %w", err)
 	}
-	return parseFaktoryJob(fj), nil
+	return parseFaktoryJob(&fj), nil
 }
 
-func parseFaktoryJob(fj faktoryJob) *ExportedJob {
+func parseFaktoryJob(fj *faktoryJob) *ExportedJob {
 	ej := &ExportedJob{
 		Type:  fj.Type,
 		Queue: fj.Queue,

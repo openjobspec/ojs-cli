@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/openjobspec/ojs-cli/internal/client"
@@ -21,9 +20,7 @@ func Retries(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
@@ -42,7 +39,9 @@ func Retries(c *client.Client, args []string) error {
 			BackoffStrategy string `json:"backoff_strategy"`
 		} `json:"policy"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	fmt.Printf("Retry history for job %s\n", jobID)
 	if resp.Policy.MaxAttempts > 0 {
@@ -79,4 +78,3 @@ func Retries(c *client.Client, args []string) error {
 	output.Table(headers, rows)
 	return nil
 }
-

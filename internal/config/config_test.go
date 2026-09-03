@@ -1,17 +1,17 @@
 package config
 
-import (
-	"os"
-	"testing"
-)
+import "testing"
 
 func TestLoad_Defaults(t *testing.T) {
 	// Clear env vars
-	os.Unsetenv("OJS_URL")
-	os.Unsetenv("OJS_AUTH_TOKEN")
-	os.Unsetenv("OJS_OUTPUT")
+	t.Setenv("OJS_URL", "")
+	t.Setenv("OJS_AUTH_TOKEN", "")
+	t.Setenv("OJS_OUTPUT", "")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.ServerURL != "http://localhost:8080" {
 		t.Errorf("ServerURL = %q, want default", cfg.ServerURL)
 	}
@@ -24,16 +24,14 @@ func TestLoad_Defaults(t *testing.T) {
 }
 
 func TestLoad_FromEnv(t *testing.T) {
-	os.Setenv("OJS_URL", "http://prod:9090")
-	os.Setenv("OJS_AUTH_TOKEN", "secret")
-	os.Setenv("OJS_OUTPUT", "json")
-	defer func() {
-		os.Unsetenv("OJS_URL")
-		os.Unsetenv("OJS_AUTH_TOKEN")
-		os.Unsetenv("OJS_OUTPUT")
-	}()
+	t.Setenv("OJS_URL", "http://prod:9090")
+	t.Setenv("OJS_AUTH_TOKEN", "secret")
+	t.Setenv("OJS_OUTPUT", "json")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.ServerURL != "http://prod:9090" {
 		t.Errorf("ServerURL = %q, want http://prod:9090", cfg.ServerURL)
 	}
@@ -42,6 +40,13 @@ func TestLoad_FromEnv(t *testing.T) {
 	}
 	if cfg.Output != "json" {
 		t.Errorf("Output = %q, want json", cfg.Output)
+	}
+}
+
+func TestLoadRejectsUnsupportedOutput(t *testing.T) {
+	t.Setenv("OJS_OUTPUT", "yaml")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want unsupported output error")
 	}
 }
 

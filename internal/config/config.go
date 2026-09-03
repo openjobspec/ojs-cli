@@ -12,8 +12,8 @@ type Config struct {
 	Output    string // "table", "json"
 }
 
-// Load reads configuration from environment variables and flags.
-func Load() *Config {
+// Load reads and validates configuration from environment variables.
+func Load() (*Config, error) {
 	cfg := &Config{
 		ServerURL: "http://localhost:8080",
 		Output:    "table",
@@ -29,7 +29,20 @@ func Load() *Config {
 		cfg.Output = output
 	}
 
-	return cfg
+	if err := ValidateOutput(cfg.Output); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// ValidateOutput rejects output modes the renderer does not support.
+func ValidateOutput(format string) error {
+	switch format {
+	case "table", "json":
+		return nil
+	default:
+		return fmt.Errorf("unsupported output format %q (expected table or json)", format)
+	}
 }
 
 // BaseURL returns the API base URL.

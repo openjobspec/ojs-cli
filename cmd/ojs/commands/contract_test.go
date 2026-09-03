@@ -106,7 +106,7 @@ func TestCrossValidatePass(t *testing.T) {
 		{Name: "id", Type: "string", Required: true},
 	}}
 
-	result := crossValidate(p, c)
+	result := crossValidate(&p, &c)
 	if !result.Passed {
 		t.Errorf("expected pass: %v", result.Errors)
 	}
@@ -120,7 +120,7 @@ func TestCrossValidateTypeMismatch(t *testing.T) {
 		{Name: "count", Type: "int", Required: true},
 	}}
 
-	result := crossValidate(p, c)
+	result := crossValidate(&p, &c)
 	if result.Passed {
 		t.Error("expected failure for type mismatch")
 	}

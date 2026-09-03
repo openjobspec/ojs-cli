@@ -11,7 +11,7 @@ import (
 
 // Cron manages cron jobs.
 func Cron(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("cron", flag.ExitOnError)
+	fs := flag.NewFlagSet("cron", flag.ContinueOnError)
 	register := fs.Bool("register", false, "Register a new cron job")
 	deleteName := fs.String("delete", "", "Delete a cron job by name")
 	name := fs.String("name", "", "Cron job name (for register)")
@@ -26,7 +26,9 @@ func Cron(c *client.Client, args []string) error {
 	detail := fs.String("detail", "", "Show detailed info for a cron job by name")
 	update := fs.String("update", "", "Update a cron job by name")
 	enabled := fs.String("enabled", "", "Filter list by enabled status (true/false)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	if *detail != "" {
 		return cronDetail(c, *detail)
@@ -58,9 +60,7 @@ func Cron(c *client.Client, args []string) error {
 			return err
 		}
 		if output.Format == "json" {
-			var result any
-			json.Unmarshal(data, &result)
-			return output.JSON(result)
+			return printJSONResponse(data)
 		}
 		output.Success("Cron job %q deleted", *deleteName)
 		return nil
@@ -96,9 +96,7 @@ func registerCron(c *client.Client, name, expression, jobType, queue string) err
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	output.Success("Cron job %q registered (expression=%s, type=%s)", name, expression, jobType)
@@ -117,9 +115,7 @@ func listCron(c *client.Client, enabledFilter string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
@@ -131,7 +127,9 @@ func listCron(c *client.Client, enabledFilter string) error {
 			LastRunAt  string `json:"last_run_at"`
 		} `json:"cron_jobs"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	if len(resp.CronJobs) == 0 {
 		fmt.Println("No cron jobs registered.")
@@ -160,13 +158,13 @@ func triggerCron(c *client.Client, name string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp map[string]any
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 	output.Success("Cron job %q triggered (job_id=%s)", name, str(resp["job_id"]))
 	return nil
 }
@@ -178,9 +176,7 @@ func cronHistory(c *client.Client, name string, limit int) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
@@ -192,7 +188,9 @@ func cronHistory(c *client.Client, name string, limit int) error {
 			CompletedAt string `json:"completed_at"`
 		} `json:"executions"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	if len(resp.Executions) == 0 {
 		fmt.Printf("No execution history for cron job %q.\n", name)
@@ -243,9 +241,7 @@ func cronDetail(c *client.Client, name string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var cj struct {
@@ -261,7 +257,9 @@ func cronDetail(c *client.Client, name string) error {
 		} `json:"job_template"`
 		RunCount int `json:"run_count"`
 	}
-	json.Unmarshal(data, &cj)
+	if err := decodeResponse(data, &cj); err != nil {
+		return err
+	}
 
 	enabled := "true"
 	if !cj.Enabled {
@@ -271,7 +269,10 @@ func cronDetail(c *client.Client, name string) error {
 	if lastRun == "" {
 		lastRun = "-"
 	}
-	optionsJSON, _ := json.Marshal(cj.JobTemplate.Options)
+	optionsJSON, err := json.Marshal(cj.JobTemplate.Options)
+	if err != nil {
+		return fmt.Errorf("format cron options: %w", err)
+	}
 
 	headers := []string{"FIELD", "VALUE"}
 	rows := [][]string{
@@ -317,9 +318,7 @@ func cronUpdate(c *client.Client, name, expression, jobType, queue string) error
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	output.Success("Cron job %q updated", name)

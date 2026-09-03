@@ -120,7 +120,7 @@ func TestGenerateOJSCodeGo(t *testing.T) {
 		Framework: FrameworkSidekiq,
 	}
 
-	gen := GenerateOJSCode(job, "go")
+	gen := GenerateOJSCode(&job, "go")
 	if gen.OJSType != "email.worker" {
 		t.Errorf("expected email.worker, got %s", gen.OJSType)
 	}
@@ -136,7 +136,8 @@ func TestGenerateOJSCodeGo(t *testing.T) {
 }
 
 func TestGenerateOJSCodeTypeScript(t *testing.T) {
-	gen := GenerateOJSCode(JobDefinition{Name: "sendEmail", Queue: "email"}, "typescript")
+	job := JobDefinition{Name: "sendEmail", Queue: "email"}
+	gen := GenerateOJSCode(&job, "typescript")
 	if gen.OJSType != "send.email" {
 		t.Errorf("expected send.email, got %s", gen.OJSType)
 	}
@@ -146,7 +147,8 @@ func TestGenerateOJSCodeTypeScript(t *testing.T) {
 }
 
 func TestGenerateOJSCodePython(t *testing.T) {
-	gen := GenerateOJSCode(JobDefinition{Name: "process_payment", Queue: "billing"}, "python")
+	job := JobDefinition{Name: "process_payment", Queue: "billing"}
+	gen := GenerateOJSCode(&job, "python")
 	if gen.ClientCode == "" || gen.WorkerCode == "" {
 		t.Error("expected non-empty generated code")
 	}

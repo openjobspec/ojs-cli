@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -14,7 +16,7 @@ import (
 
 // Dev starts a local development environment using the Lite backend.
 func Dev(args []string) error {
-	fs := flag.NewFlagSet("dev", flag.ExitOnError)
+	fs := flag.NewFlagSet("dev", flag.ContinueOnError)
 	port := fs.Int("port", 8080, "HTTP port")
 	grpcPort := fs.Int("grpc", 9090, "gRPC port")
 	verbose := fs.Bool("verbose", false, "Show server logs")
@@ -79,17 +81,36 @@ Flags:
 ╚══════════════════════════════════════════════╝
 `, *port, *port, *port, *grpcPort)
 
-	// Wait for interrupt
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-
-	fmt.Println("\n🛑 Shutting down...")
-	if cmd.Process != nil {
-		cmd.Process.Signal(syscall.SIGTERM)
-		cmd.Wait()
+	defer signal.Stop(sig)
+	select {
+	case waitErr := <-waitCh:
+		if waitErr != nil {
+			return fmt.Errorf("lite backend exited: %w", waitErr)
+		}
+		return nil
+	case <-sig:
+		fmt.Println("\n🛑 Shutting down...")
+		if cmd.Process == nil {
+			return nil
+		}
+		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return fmt.Errorf("stop lite backend: %w", err)
+		}
+		if waitErr := <-waitCh; waitErr != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(waitErr, &exitErr) {
+				return fmt.Errorf("wait for lite backend: %w", waitErr)
+			}
+		}
+		return nil
 	}
-	return nil
 }
 
 func findLiteBackend() string {
@@ -99,7 +120,10 @@ func findLiteBackend() string {
 		filepath.Join(os.Getenv("GOPATH"), "bin", "ojs-server"),
 	}
 
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
 	for _, c := range candidates {
 		abs := c
 		if !filepath.IsAbs(c) {
@@ -122,11 +146,15 @@ func waitForReady(url string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	for time.Now().Before(deadline) {
-		resp, err := client.Get(url)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+		if err != nil {
+			return false
+		}
+		resp, err := client.Do(req)
 		if err == nil {
-			resp.Body.Close()
+			closeErr := resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return true
+				return closeErr == nil
 			}
 		}
 		time.Sleep(200 * time.Millisecond)

@@ -2,11 +2,14 @@ package commands
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/openjobspec/ojs-cli/internal/client"
+	"github.com/openjobspec/ojs-cli/internal/fileutil"
 	"github.com/openjobspec/ojs-cli/internal/migrate"
 	"github.com/openjobspec/ojs-cli/internal/output"
 )
@@ -125,6 +128,7 @@ func migrateExport(args []string) error {
 	fs := flag.NewFlagSet("migrate export", flag.ContinueOnError)
 	redisURL := fs.String("redis", "redis://localhost:6379", "Redis connection URL")
 	outputFile := fs.String("output", "jobs.ndjson", "Output NDJSON file")
+	allowPartial := fs.Bool("allow-partial", false, "Write valid records even when some source records are malformed")
 	if err := fs.Parse(args[1:]); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
 	}
@@ -135,26 +139,65 @@ func migrateExport(args []string) error {
 	}
 	defer src.Close()
 
-	jobs, err := src.Export()
-	if err != nil {
-		return fmt.Errorf("export failed: %w", err)
-	}
+	return exportSource(src, *outputFile, *allowPartial)
+}
 
-	f, err := os.Create(*outputFile)
-	if err != nil {
-		return fmt.Errorf("create output file: %w", err)
-	}
-	defer f.Close()
-
-	enc := json.NewEncoder(f)
-	for _, job := range jobs {
-		if err := enc.Encode(job); err != nil {
-			return fmt.Errorf("write job: %w", err)
+func exportSource(src migrate.Source, outputFile string, allowPartial bool) error {
+	jobs, exportErr := src.Export()
+	var partialErr *migrate.PartialExportError
+	switch {
+	case exportErr == nil:
+	case errors.As(exportErr, &partialErr):
+		printPartialExportFailures(partialErr)
+		if !allowPartial {
+			return fmt.Errorf("export aborted; use --allow-partial to write the %d valid records: %w", len(jobs), exportErr)
 		}
+	default:
+		return fmt.Errorf("export failed: %w", exportErr)
 	}
 
-	output.Success("Exported %d jobs to %s", len(jobs), *outputFile)
+	if err := writeExportFile(outputFile, jobs); err != nil {
+		return err
+	}
+
+	if partialErr != nil {
+		output.Warn("Wrote partial export with %d valid jobs to %s", len(jobs), outputFile)
+		return partialErr
+	}
+	output.Success("Exported %d jobs to %s", len(jobs), outputFile)
 	return nil
+}
+
+func writeExportFile(path string, jobs []migrate.ExportedJob) error {
+	err := fileutil.WriteAtomic(path, 0o644, func(writer io.Writer) error {
+		encoder := json.NewEncoder(writer)
+		for i := range jobs {
+			if err := encoder.Encode(&jobs[i]); err != nil {
+				return fmt.Errorf("encode job %d: %w", i+1, err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("write output file: %w", err)
+	}
+	return nil
+}
+
+func printPartialExportFailures(partial *migrate.PartialExportError) {
+	fmt.Fprintf(os.Stderr, "Export skipped %d malformed record(s):\n", len(partial.Failures))
+	for _, failure := range partial.Failures {
+		location := failure.Structure
+		if failure.Queue != "" {
+			location = failure.Queue + "/" + location
+		}
+		if failure.ID != "" {
+			location += "/" + failure.ID
+		} else if failure.Index > 0 {
+			location += fmt.Sprintf("#%d", failure.Index)
+		}
+		fmt.Fprintf(os.Stderr, "  - %s: %s\n", location, failure.Error)
+	}
 }
 
 func migrateImport(c *client.Client, args []string) error {
@@ -168,47 +211,83 @@ func migrateImport(c *client.Client, args []string) error {
 	if *file == "" {
 		return fmt.Errorf("--file is required\n\nUsage: ojs migrate import --file <file> [--dry-run]")
 	}
-
 	if *dryRun {
-		vr, err := migrate.ValidateFile(*file)
-		if err != nil {
-			return fmt.Errorf("validation failed: %w", err)
-		}
+		return migrateImportDryRun(*file)
+	}
+	return migrateImportJobs(c, *file)
+}
 
-		if output.Format == "json" {
-			return output.JSON(vr)
+func migrateImportDryRun(file string) error {
+	result, err := migrate.ValidateFile(file)
+	if err != nil {
+		return fmt.Errorf("validation failed: %w", err)
+	}
+	if output.Format == "json" {
+		if err := output.JSON(result); err != nil {
+			return err
 		}
-
+	} else {
 		output.Success("Dry run: %d valid, %d invalid out of %d total jobs",
-			vr.Valid, vr.Invalid, vr.Total)
-		if vr.Invalid > 0 {
-			fmt.Fprintf(os.Stderr, "\nFirst errors:\n")
-			limit := vr.Invalid
-			if limit > 5 {
-				limit = 5
-			}
-			for i := 0; i < limit; i++ {
-				fmt.Fprintf(os.Stderr, "  Line %d: %s\n", vr.Errors[i].Line, vr.Errors[i].Message)
-			}
-		}
+			result.Valid, result.Invalid, result.Total)
+		printImportValidationErrors(result)
+	}
+	if result.Invalid == 0 {
 		return nil
 	}
 
-	result, err := migrate.ImportFile(c, *file, func(imported, total int) {
+	details := make([]migrate.FailureDetail, 0, len(result.Errors))
+	for _, validationErr := range result.Errors {
+		details = append(details, migrate.FailureDetail{
+			Index: validationErr.Line,
+			Error: validationErr.Message,
+		})
+	}
+	return &migrate.PartialFailureError{
+		Operation: "import validation",
+		Total:     result.Total,
+		Failed:    result.Invalid,
+		Details:   details,
+	}
+}
+
+func printImportValidationErrors(result *migrate.ValidationResult) {
+	if result.Invalid == 0 {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "\nFirst errors:")
+	limit := min(result.Invalid, 5)
+	for i := 0; i < limit; i++ {
+		fmt.Fprintf(os.Stderr, "  Line %d: %s\n", result.Errors[i].Line, result.Errors[i].Message)
+	}
+}
+
+func migrateImportJobs(c *client.Client, file string) error {
+	result, importErr := migrate.ImportFile(c, file, func(imported, total int) {
 		fmt.Fprintf(os.Stderr, "\r  Imported %d/%d jobs...", imported, total)
 	})
-	if err != nil {
-		return fmt.Errorf("import failed: %w", err)
+	var partialErr *migrate.PartialFailureError
+	if importErr != nil && !errors.As(importErr, &partialErr) {
+		return fmt.Errorf("import failed: %w", importErr)
 	}
 
 	fmt.Fprintln(os.Stderr)
 
-	if output.Format == "json" {
-		return output.JSON(result)
+	switch {
+	case output.Format == "json":
+		if err := output.JSON(result); err != nil {
+			return err
+		}
+	case result.Failed > 0:
+		output.Warn("Import complete: %d succeeded, %d failed (%d batches)",
+			result.Success, result.Failed, result.Batches)
+	default:
+		output.Success("Import complete: %d succeeded, %d failed (%d batches)",
+			result.Success, result.Failed, result.Batches)
 	}
 
-	output.Success("Import complete: %d succeeded, %d failed (%d batches)",
-		result.Success, result.Failed, result.Batches)
+	if partialErr != nil {
+		return partialErr
+	}
 	return nil
 }
 
@@ -225,7 +304,7 @@ func newSource(name, redisURL string) (migrate.Source, error) {
 	case "river":
 		return migrate.NewRiverSource(redisURL)
 	default:
-		return nil, fmt.Errorf("unsupported source: %s\n\nSupported sources: sidekiq, bullmq, celery", name)
+		return nil, fmt.Errorf("unsupported source: %s\n\nSupported sources: sidekiq, bullmq, celery, faktory, river", name)
 	}
 }
 

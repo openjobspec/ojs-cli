@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 
@@ -26,49 +25,56 @@ func System(c *client.Client, args []string) error {
 }
 
 func systemMaintenance(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("system maintenance", flag.ExitOnError)
+	fs := flag.NewFlagSet("system maintenance", flag.ContinueOnError)
 	enable := fs.Bool("enable", false, "Enable maintenance mode")
 	disable := fs.Bool("disable", false, "Disable maintenance mode")
 	reason := fs.String("reason", "", "Reason for maintenance")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	if !*enable && !*disable {
-		// Show current status
-		data, _, err := c.Get("/admin/maintenance")
-		if err != nil {
-			return err
-		}
-		if output.Format == "json" {
-			var result any
-			json.Unmarshal(data, &result)
-			return output.JSON(result)
-		}
-		var resp map[string]any
-		json.Unmarshal(data, &resp)
-		enabled := str(resp["enabled"])
-		if enabled == "true" {
-			fmt.Printf("Maintenance mode: ENABLED\n")
-			if resp["reason"] != nil {
-				fmt.Printf("Reason: %s\n", str(resp["reason"]))
-			}
-			if resp["started_at"] != nil {
-				fmt.Printf("Since: %s\n", str(resp["started_at"]))
-			}
-		} else {
-			fmt.Println("Maintenance mode: DISABLED")
-		}
-		return nil
+		return showMaintenance(c)
 	}
 
 	if *enable && *disable {
 		return fmt.Errorf("cannot use both --enable and --disable")
 	}
+	return setMaintenance(c, *enable, *reason)
+}
 
-	body := map[string]any{
-		"enabled": *enable,
+func showMaintenance(c *client.Client) error {
+	data, _, err := c.Get("/admin/maintenance")
+	if err != nil {
+		return err
 	}
-	if *reason != "" {
-		body["reason"] = *reason
+	if output.Format == "json" {
+		return printJSONResponse(data)
+	}
+	var response map[string]any
+	if err := decodeResponse(data, &response); err != nil {
+		return err
+	}
+	if str(response["enabled"]) != "true" {
+		fmt.Println("Maintenance mode: DISABLED")
+		return nil
+	}
+	fmt.Println("Maintenance mode: ENABLED")
+	if response["reason"] != nil {
+		fmt.Printf("Reason: %s\n", str(response["reason"]))
+	}
+	if response["started_at"] != nil {
+		fmt.Printf("Since: %s\n", str(response["started_at"]))
+	}
+	return nil
+}
+
+func setMaintenance(c *client.Client, enable bool, reason string) error {
+	body := map[string]any{
+		"enabled": enable,
+	}
+	if reason != "" {
+		body["reason"] = reason
 	}
 
 	data, _, err := c.Post("/admin/maintenance", body)
@@ -77,15 +83,13 @@ func systemMaintenance(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
-	if *enable {
+	if enable {
 		msg := "Maintenance mode enabled"
-		if *reason != "" {
-			msg += fmt.Sprintf(" (reason: %s)", *reason)
+		if reason != "" {
+			msg += fmt.Sprintf(" (reason: %s)", reason)
 		}
 		output.Success(msg)
 	} else {
@@ -100,15 +104,7 @@ func systemConfig(c *client.Client) error {
 		return err
 	}
 
-	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
-	}
-
-	var result any
-	json.Unmarshal(data, &result)
-	return output.JSON(result)
+	return printJSONResponse(data)
 }
 
 func printSystemUsage() error {

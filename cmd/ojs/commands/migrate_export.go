@@ -1,31 +1,39 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/openjobspec/ojs-cli/internal/fileutil"
+	"github.com/openjobspec/ojs-cli/internal/migrate"
+	"github.com/openjobspec/ojs-cli/internal/redact"
 )
+
+const maxMigrationExportResponseBytes = 64 << 20
 
 // MigrateExportFlags holds the flags for the migrate export command.
 type MigrateExportFlags struct {
-	OutputFile       string
-	IncludeCompleted bool
+	OutputFile        string
+	IncludeCompleted  bool
 	IncludeDeadLetter bool
-	Queues           []string
-	Since            string
+	Queues            []string
+	Since             string
+	AllowPartial      bool
 }
 
 // migrationExport matches the migration-export.schema.json format.
 type migrationExport struct {
-	Version    string              `json:"version"`
-	Source     migrationSource     `json:"source"`
-	ExportedAt string             `json:"exported_at"`
-	Options    migrationOptions    `json:"options"`
-	Jobs       []migrationJob      `json:"jobs"`
-	Stats      migrationStats      `json:"stats"`
+	Version    string           `json:"version"`
+	Source     migrationSource  `json:"source"`
+	ExportedAt string           `json:"exported_at"`
+	Options    migrationOptions `json:"options"`
+	Jobs       []migrationJob   `json:"jobs"`
+	Stats      migrationStats   `json:"stats"`
 }
 
 type migrationSource struct {
@@ -64,72 +72,124 @@ type migrationStats struct {
 
 // RunMigrateExport exports jobs from an OJS server to the migration format.
 func RunMigrateExport(serverURL string, flags MigrateExportFlags) error {
-	// Fetch health to get backend info
-	healthResp, err := http.Get(serverURL + "/ojs/v1/health")
+	client := &http.Client{Timeout: 30 * time.Second}
+	health, err := fetchMigrationHealth(client, serverURL)
 	if err != nil {
-		return fmt.Errorf("cannot reach server at %s: %w", serverURL, err)
+		return err
 	}
-	defer healthResp.Body.Close()
-
-	var health struct {
-		Status  string `json:"status"`
-		Version string `json:"version"`
-		Backend string `json:"backend"`
-	}
-	if err := json.NewDecoder(healthResp.Body).Decode(&health); err != nil {
-		return fmt.Errorf("parsing health response: %w", err)
-	}
-
-	// Fetch jobs from the admin API
-	jobsURL := serverURL + "/ojs/v1/admin/jobs?limit=10000"
-	if !flags.IncludeCompleted {
-		jobsURL += "&exclude_terminal=true"
-	}
-
-	jobsResp, err := http.Get(jobsURL)
+	rawJobs, err := fetchMigrationJobs(client, serverURL, flags.IncludeCompleted)
 	if err != nil {
-		return fmt.Errorf("fetching jobs: %w", err)
+		return err
 	}
-	defer jobsResp.Body.Close()
 
-	body, err := io.ReadAll(jobsResp.Body)
+	export, partialErr := buildMigrationExport(serverURL, health, rawJobs, flags)
+	if partialErr != nil && !flags.AllowPartial {
+		return fmt.Errorf("export aborted; set AllowPartial to write valid jobs: %w", partialErr)
+	}
+	data, err := json.MarshalIndent(export, "", "  ")
 	if err != nil {
-		return fmt.Errorf("reading jobs response: %w", err)
+		return fmt.Errorf("marshalling export: %w", err)
 	}
 
-	var jobsResult struct {
+	if err := writeMigrationExport(flags.OutputFile, data); err != nil {
+		return err
+	}
+	printMigrationExportStats(export, flags.OutputFile)
+	if partialErr != nil {
+		for _, failure := range partialErr.Failures {
+			fmt.Fprintf(os.Stderr, "   skipped job %d: %s\n", failure.Index, failure.Error)
+		}
+		return partialErr
+	}
+	return nil
+}
+
+type migrationHealth struct {
+	Status  string `json:"status"`
+	Version string `json:"version"`
+	Backend string `json:"backend"`
+}
+
+func fetchMigrationHealth(client *http.Client, serverURL string) (*migrationHealth, error) {
+	var health migrationHealth
+	if err := getMigrationJSON(client, serverURL+"/ojs/v1/health", &health); err != nil {
+		return nil, fmt.Errorf("fetch health from %s: %w", redact.URL(serverURL), err)
+	}
+	return &health, nil
+}
+
+func fetchMigrationJobs(client *http.Client, serverURL string, includeCompleted bool) ([]json.RawMessage, error) {
+	endpoint := serverURL + "/ojs/v1/admin/jobs?limit=10000"
+	if !includeCompleted {
+		endpoint += "&exclude_terminal=true"
+	}
+	var result struct {
 		Jobs []json.RawMessage `json:"jobs"`
 	}
-	if err := json.Unmarshal(body, &jobsResult); err != nil {
-		return fmt.Errorf("parsing jobs: %w", err)
+	if err := getMigrationJSON(client, endpoint, &result); err != nil {
+		return nil, fmt.Errorf("fetch jobs from %s: %w", redact.URL(serverURL), err)
 	}
+	return result.Jobs, nil
+}
 
-	// Convert to migration format
-	var jobs []migrationJob
+func getMigrationJSON(client *http.Client, endpoint string, target any) error {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMigrationExportResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+	if len(body) > maxMigrationExportResponseBytes {
+		return fmt.Errorf("response exceeds %d bytes", maxMigrationExportResponseBytes)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	if err := json.Unmarshal(body, target); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
+func buildMigrationExport(
+	serverURL string,
+	health *migrationHealth,
+	rawJobs []json.RawMessage,
+	flags MigrateExportFlags,
+) (*migrationExport, *migrate.PartialExportError) {
+	jobs := make([]migrationJob, 0, len(rawJobs))
 	byState := make(map[string]int)
 	byQueue := make(map[string]int)
-
-	for _, raw := range jobsResult.Jobs {
-		var j migrationJob
-		if err := json.Unmarshal(raw, &j); err != nil {
+	failures := make([]migrate.FailedRecord, 0)
+	for i, raw := range rawJobs {
+		var job migrationJob
+		if err := json.Unmarshal(raw, &job); err != nil {
+			failures = append(failures, migrate.FailedRecord{
+				Source: "ojs", Structure: "admin/jobs", Index: i + 1, Error: err.Error(),
+			})
 			continue
 		}
-
-		// Apply queue filter
-		if len(flags.Queues) > 0 && !contains(flags.Queues, j.Queue) {
+		if len(flags.Queues) > 0 && !contains(flags.Queues, job.Queue) {
 			continue
 		}
-
-		jobs = append(jobs, j)
-		byState[j.State]++
-		byQueue[j.Queue]++
+		jobs = append(jobs, job)
+		byState[job.State]++
+		byQueue[job.Queue]++
 	}
 
-	export := migrationExport{
+	export := &migrationExport{
 		Version: "1.0",
 		Source: migrationSource{
 			Backend: health.Backend,
-			URL:     serverURL,
+			URL:     redact.URL(serverURL),
 			Version: health.Version,
 		},
 		ExportedAt: time.Now().UTC().Format(time.RFC3339),
@@ -146,34 +206,40 @@ func RunMigrateExport(serverURL string, flags MigrateExportFlags) error {
 			ByQueue:   byQueue,
 		},
 	}
-
-	data, err := json.MarshalIndent(export, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshalling export: %w", err)
+	if len(failures) > 0 {
+		return export, &migrate.PartialExportError{Exported: len(jobs), Failures: failures}
 	}
+	return export, nil
+}
 
-	if flags.OutputFile != "" && flags.OutputFile != "-" {
-		if err := os.WriteFile(flags.OutputFile, data, 0644); err != nil {
-			return fmt.Errorf("writing file: %w", err)
-		}
-		fmt.Fprintf(os.Stderr, "✅ Exported %d jobs to %s\n", len(jobs), flags.OutputFile)
-	} else {
+func writeMigrationExport(path string, data []byte) error {
+	if path == "" || path == "-" {
 		fmt.Println(string(data))
+		return nil
 	}
-
-	// Print stats summary to stderr
-	fmt.Fprintf(os.Stderr, "   Backend: %s\n", health.Backend)
-	fmt.Fprintf(os.Stderr, "   Total: %d jobs\n", len(jobs))
-	for state, count := range byState {
-		fmt.Fprintf(os.Stderr, "   %s: %d\n", state, count)
+	if err := fileutil.WriteAtomic(path, 0o644, func(writer io.Writer) error {
+		_, err := writer.Write(data)
+		return err
+	}); err != nil {
+		return fmt.Errorf("writing file: %w", err)
 	}
-
 	return nil
 }
 
+func printMigrationExportStats(export *migrationExport, outputFile string) {
+	if outputFile != "" && outputFile != "-" {
+		fmt.Fprintf(os.Stderr, "✅ Exported %d jobs to %s\n", len(export.Jobs), outputFile)
+	}
+	fmt.Fprintf(os.Stderr, "   Backend: %s\n", export.Source.Backend)
+	fmt.Fprintf(os.Stderr, "   Total: %d jobs\n", len(export.Jobs))
+	for state, count := range export.Stats.ByState {
+		fmt.Fprintf(os.Stderr, "   %s: %d\n", state, count)
+	}
+}
+
 func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
+	for _, value := range slice {
+		if value == item {
 			return true
 		}
 	}

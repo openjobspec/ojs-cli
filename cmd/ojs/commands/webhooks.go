@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 
@@ -34,11 +33,13 @@ func Webhooks(c *client.Client, args []string) error {
 }
 
 func webhookCreate(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("webhooks create", flag.ExitOnError)
+	fs := flag.NewFlagSet("webhooks create", flag.ContinueOnError)
 	url := fs.String("url", "", "Webhook endpoint URL (required)")
 	events := fs.String("events", "", "Comma-separated event types to subscribe to (required)")
 	secret := fs.String("secret", "", "Shared secret for HMAC signature verification")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	if *url == "" || *events == "" {
 		return fmt.Errorf("--url and --events are required\n\n" +
@@ -61,21 +62,23 @@ func webhookCreate(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp map[string]any
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 	output.Success("Webhook subscription created: %s (url=%s)", str(resp["id"]), *url)
 	return nil
 }
 
 func webhookList(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("webhooks list", flag.ExitOnError)
+	fs := flag.NewFlagSet("webhooks list", flag.ContinueOnError)
 	limit := fs.Int("limit", 25, "Max results to return")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	data, _, err := c.Get(fmt.Sprintf("/webhooks/subscriptions?limit=%d", *limit))
 	if err != nil {
@@ -83,9 +86,7 @@ func webhookList(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
@@ -98,7 +99,9 @@ func webhookList(c *client.Client, args []string) error {
 		} `json:"subscriptions"`
 		Total int `json:"total"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	fmt.Printf("Webhook subscriptions: %d total\n\n", resp.Total)
 
@@ -139,9 +142,7 @@ func webhookGet(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var sub struct {
@@ -154,7 +155,9 @@ func webhookGet(c *client.Client, args []string) error {
 		SuccessCount   int      `json:"success_count"`
 		FailureCount   int      `json:"failure_count"`
 	}
-	json.Unmarshal(data, &sub)
+	if err := decodeResponse(data, &sub); err != nil {
+		return err
+	}
 
 	active := "true"
 	if !sub.Active {
@@ -214,16 +217,16 @@ func webhookTest(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
 		StatusCode int  `json:"status_code"`
 		Success    bool `json:"success"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	if resp.Success {
 		output.Success("Test webhook delivered successfully (status=%d)", resp.StatusCode)
@@ -245,13 +248,13 @@ func webhookRotateSecret(c *client.Client, args []string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp map[string]any
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 	output.Success("Webhook secret rotated for subscription %s", subID)
 	if resp["new_secret"] != nil {
 		fmt.Printf("New secret: %s\n", str(resp["new_secret"]))

@@ -10,10 +10,11 @@ import (
 
 // ImportResult holds the result of importing jobs into an OJS server.
 type ImportResult struct {
-	Total    int `json:"total"`
-	Success  int `json:"success"`
-	Failed   int `json:"failed"`
-	Batches  int `json:"batches"`
+	Total    int             `json:"total"`
+	Success  int             `json:"success"`
+	Failed   int             `json:"failed"`
+	Batches  int             `json:"batches"`
+	Failures []FailureDetail `json:"failures,omitempty"`
 }
 
 // Poster is the interface for making POST requests to the OJS API.
@@ -21,7 +22,10 @@ type Poster interface {
 	Post(path string, body any) ([]byte, int, error)
 }
 
-const importBatchSize = 100
+const (
+	importBatchSize      = 100
+	maxImportRecordBytes = 4 << 20
+)
 
 // ImportFile reads an NDJSON file and imports jobs via the OJS API in batches.
 func ImportFile(c Poster, filename string, progress func(imported, total int)) (*ImportResult, error) {
@@ -36,9 +40,11 @@ func ImportFile(c Poster, filename string, progress func(imported, total int)) (
 
 func importFromReader(c Poster, r io.Reader, progress func(imported, total int)) (*ImportResult, error) {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), maxImportRecordBytes)
 
 	result := &ImportResult{}
 	var batch []ExportedJob
+	var batchIndexes []int
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -50,18 +56,25 @@ func importFromReader(c Poster, r io.Reader, progress func(imported, total int))
 		if err := json.Unmarshal([]byte(line), &job); err != nil {
 			result.Failed++
 			result.Total++
+			result.Failures = append(result.Failures, FailureDetail{
+				Index: result.Total,
+				Error: fmt.Sprintf("decode record: %v", err),
+			})
 			continue
 		}
 
 		batch = append(batch, job)
 		result.Total++
+		batchIndexes = append(batchIndexes, result.Total)
 
 		if len(batch) >= importBatchSize {
-			ok, fail := sendBatch(c, batch)
+			ok, failures := sendBatch(c, batch, batchIndexes)
 			result.Success += ok
-			result.Failed += fail
+			result.Failed += len(failures)
+			result.Failures = append(result.Failures, failures...)
 			result.Batches++
 			batch = batch[:0]
+			batchIndexes = batchIndexes[:0]
 
 			if progress != nil {
 				progress(result.Success, result.Total)
@@ -75,9 +88,10 @@ func importFromReader(c Poster, r io.Reader, progress func(imported, total int))
 
 	// Flush remaining
 	if len(batch) > 0 {
-		ok, fail := sendBatch(c, batch)
+		ok, failures := sendBatch(c, batch, batchIndexes)
 		result.Success += ok
-		result.Failed += fail
+		result.Failed += len(failures)
+		result.Failures = append(result.Failures, failures...)
 		result.Batches++
 
 		if progress != nil {
@@ -85,24 +99,33 @@ func importFromReader(c Poster, r io.Reader, progress func(imported, total int))
 		}
 	}
 
+	if result.Failed > 0 {
+		return result, &PartialFailureError{
+			Operation: "job import",
+			Total:     result.Total,
+			Failed:    result.Failed,
+			Details:   append([]FailureDetail(nil), result.Failures...),
+		}
+	}
 	return result, nil
 }
 
-func sendBatch(c Poster, batch []ExportedJob) (success, failed int) {
-	for _, job := range batch {
+func sendBatch(c Poster, batch []ExportedJob, indexes []int) (int, []FailureDetail) {
+	success := 0
+	failures := make([]FailureDetail, 0)
+	for i, job := range batch {
+		options := map[string]any{"queue": job.Queue}
 		body := map[string]any{
-			"type": job.Type,
-			"args": job.Args,
-			"options": map[string]any{
-				"queue": job.Queue,
-			},
+			"type":    job.Type,
+			"args":    job.Args,
+			"options": options,
 		}
 
 		if job.Priority != nil {
-			body["options"].(map[string]any)["priority"] = *job.Priority
+			options["priority"] = *job.Priority
 		}
 		if job.ScheduledAt != "" {
-			body["options"].(map[string]any)["scheduled_at"] = job.ScheduledAt
+			options["scheduled_at"] = job.ScheduledAt
 		}
 		if job.Meta != nil {
 			body["meta"] = job.Meta
@@ -110,10 +133,18 @@ func sendBatch(c Poster, batch []ExportedJob) (success, failed int) {
 
 		_, _, err := c.Post("/jobs", body)
 		if err != nil {
-			failed++
+			index := i + 1
+			if i < len(indexes) {
+				index = indexes[i]
+			}
+			failures = append(failures, FailureDetail{
+				Index: index,
+				Type:  job.Type,
+				Error: err.Error(),
+			})
 		} else {
 			success++
 		}
 	}
-	return
+	return success, failures
 }

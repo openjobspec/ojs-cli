@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 
@@ -11,12 +10,14 @@ import (
 
 // Stats shows aggregate system statistics.
 func Stats(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("stats", flag.ExitOnError)
+	fs := flag.NewFlagSet("stats", flag.ContinueOnError)
 	history := fs.Bool("history", false, "Show historical time-series statistics")
 	period := fs.String("period", "1h", "Aggregation period for history (5m, 1h, 1d)")
 	since := fs.String("since", "", "Start time for history (e.g. 2024-01-01T00:00:00Z or 24h)")
 	queue := fs.String("queue", "", "Filter stats by queue name")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	if *history {
 		return statsHistory(c, *period, *since, *queue)
@@ -37,9 +38,7 @@ func statsOverview(c *client.Client, queue string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
@@ -64,13 +63,15 @@ func statsOverview(c *client.Client, queue string) error {
 			Cancelled int `json:"cancelled"`
 		} `json:"jobs"`
 		Throughput struct {
-			EnqueuedPerMin int     `json:"enqueued_per_min"`
-			CompletedPerMin int    `json:"completed_per_min"`
-			FailedPerMin   int     `json:"failed_per_min"`
-			AvgLatencyMs   float64 `json:"avg_latency_ms"`
+			EnqueuedPerMin  int     `json:"enqueued_per_min"`
+			CompletedPerMin int     `json:"completed_per_min"`
+			FailedPerMin    int     `json:"failed_per_min"`
+			AvgLatencyMs    float64 `json:"avg_latency_ms"`
 		} `json:"throughput"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	fmt.Println("System Statistics")
 	fmt.Println()
@@ -134,22 +135,22 @@ func statsHistory(c *client.Client, period, since, queue string) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
 		Period     string `json:"period"`
 		DataPoints []struct {
-			Timestamp   string `json:"timestamp"`
-			Enqueued    int    `json:"enqueued"`
-			Completed   int    `json:"completed"`
-			Failed      int    `json:"failed"`
+			Timestamp    string  `json:"timestamp"`
+			Enqueued     int     `json:"enqueued"`
+			Completed    int     `json:"completed"`
+			Failed       int     `json:"failed"`
 			AvgLatencyMs float64 `json:"avg_latency_ms"`
 		} `json:"data_points"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	fmt.Printf("Statistics history (period=%s)\n\n", resp.Period)
 

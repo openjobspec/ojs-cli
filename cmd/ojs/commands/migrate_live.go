@@ -1,15 +1,22 @@
 package commands
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
-	"sync"
 	"time"
 
+	"github.com/openjobspec/ojs-cli/internal/redact"
 	"github.com/openjobspec/ojs-go-backend-common/migration"
+)
+
+const (
+	maxMigrationProxyRequestBytes  = 1 << 20
+	maxMigrationProxyResponseBytes = 8 << 20
 )
 
 // MigrateLive starts a live migration proxy that translates Sidekiq/BullMQ/Celery
@@ -19,38 +26,28 @@ import (
 //
 //	ojs migrate live --source=sidekiq --ojs-url=http://localhost:8080 --listen=:8090 --percentage=10
 func MigrateLive(args []string) error {
-	source := migration.SourceSidekiq
-	ojsURL := "http://localhost:8080"
-	listenAddr := ":8090"
-	percentage := 10
-
-	for _, arg := range args {
-		key, value, _ := strings.Cut(arg, "=")
-		key = strings.TrimPrefix(key, "--")
-		switch key {
-		case "source":
-			source = migration.Source(value)
-		case "ojs-url":
-			ojsURL = value
-		case "listen":
-			listenAddr = value
-		case "percentage":
-			fmt.Sscanf(value, "%d", &percentage)
-		}
+	fs := flag.NewFlagSet("migrate live", flag.ContinueOnError)
+	sourceName := fs.String("source", string(migration.SourceSidekiq), "Legacy source format")
+	ojsURL := fs.String("ojs-url", "http://localhost:8080", "OJS target URL")
+	listenAddr := fs.String("listen", ":8090", "Proxy listen address")
+	percentage := fs.Int("percentage", 10, "Percentage of traffic routed to OJS")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
 	}
+	source := migration.Source(*sourceName)
 
 	session, err := migration.NewSession("live-migration", source)
 	if err != nil {
 		return fmt.Errorf("creating migration session: %w", err)
 	}
 
-	if err := session.StartDualRun(percentage); err != nil {
+	if err := session.StartDualRun(*percentage); err != nil {
 		return fmt.Errorf("starting dual run: %w", err)
 	}
 
 	proxy := &MigrationProxy{
 		session:    session,
-		ojsURL:     ojsURL,
+		ojsURL:     *ojsURL,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 
@@ -64,9 +61,9 @@ func MigrateLive(args []string) error {
 
 	fmt.Printf("🔄 Migration proxy started\n")
 	fmt.Printf("   Source:     %s\n", source)
-	fmt.Printf("   OJS URL:    %s\n", ojsURL)
-	fmt.Printf("   Listen:     %s\n", listenAddr)
-	fmt.Printf("   Split:      %d%% → OJS\n", percentage)
+	fmt.Printf("   OJS URL:    %s\n", redact.URL(*ojsURL))
+	fmt.Printf("   Listen:     %s\n", *listenAddr)
+	fmt.Printf("   Split:      %d%% → OJS\n", *percentage)
 	fmt.Printf("\n   POST /migrate/jobs          Submit legacy jobs\n")
 	fmt.Printf("   GET  /migrate/status        Migration status\n")
 	fmt.Printf("   POST /migrate/percentage    Change traffic split\n")
@@ -74,7 +71,7 @@ func MigrateLive(args []string) error {
 	fmt.Printf("   POST /migrate/rollback      Revert to 0%% OJS\n")
 
 	server := &http.Server{
-		Addr:         listenAddr,
+		Addr:         *listenAddr,
 		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
@@ -85,7 +82,6 @@ func MigrateLive(args []string) error {
 
 // MigrationProxy handles HTTP requests for live migration.
 type MigrationProxy struct {
-	mu         sync.RWMutex
 	session    *migration.Session
 	ojsURL     string
 	httpClient *http.Client
@@ -98,7 +94,7 @@ func (p *MigrationProxy) HandleJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxMigrationProxyRequestBytes))
 	if err != nil {
 		writeHTTPJSON(w, http.StatusBadRequest, map[string]string{"error": "reading body: " + err.Error()})
 		return
@@ -116,36 +112,77 @@ func (p *MigrationProxy) HandleJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		jobJSON, _ := json.Marshal(map[string]interface{}{
+		jobJSON, err := json.Marshal(map[string]interface{}{
 			"type": job.Type,
 			"args": json.RawMessage(job.Args),
 			"options": map[string]interface{}{
 				"queue": job.Queue,
 			},
 		})
+		if err != nil {
+			p.session.Splitter.RecordError()
+			writeHTTPJSON(w, http.StatusBadRequest, map[string]string{
+				"error":  "encoding translated job: " + err.Error(),
+				"routed": "ojs",
+			})
+			return
+		}
 
-		resp, err := p.httpClient.Post(p.ojsURL+"/ojs/v1/jobs", "application/json", strings.NewReader(string(jobJSON)))
+		req, err := http.NewRequestWithContext(
+			r.Context(),
+			http.MethodPost,
+			p.ojsURL+"/ojs/v1/jobs",
+			bytes.NewReader(jobJSON),
+		)
 		if err != nil {
 			p.session.Splitter.RecordError()
 			writeHTTPJSON(w, http.StatusBadGateway, map[string]string{
-				"error":  "forwarding to OJS: " + err.Error(),
+				"error":  "creating OJS request: " + err.Error(),
+				"routed": "ojs",
+			})
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := p.httpClient.Do(req)
+		if err != nil {
+			p.session.Splitter.RecordError()
+			writeHTTPJSON(w, http.StatusBadGateway, map[string]string{
+				"error":  "forwarding to OJS: " + redact.RequestError(err).Error(),
 				"routed": "ojs",
 			})
 			return
 		}
 		defer resp.Body.Close()
 
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxMigrationProxyResponseBytes+1))
+		if err != nil {
+			p.session.Splitter.RecordError()
+			writeHTTPJSON(w, http.StatusBadGateway, map[string]string{
+				"error":  "reading OJS response: " + err.Error(),
+				"routed": "ojs",
+			})
+			return
+		}
+		if len(respBody) > maxMigrationProxyResponseBytes {
+			p.session.Splitter.RecordError()
+			writeHTTPJSON(w, http.StatusBadGateway, map[string]string{
+				"error":  "OJS response exceeded size limit",
+				"routed": "ojs",
+			})
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Migration-Routed", "ojs")
 		w.WriteHeader(resp.StatusCode)
-		w.Write(respBody)
+		if _, err := w.Write(respBody); err != nil {
+			p.session.Splitter.RecordError()
+		}
 	} else {
-		// Pass through as-is (legacy format)
-		writeHTTPJSON(w, http.StatusOK, map[string]interface{}{
-			"routed":  "legacy",
-			"message": "job passed through without translation",
-			"size":    len(body),
+		p.session.Splitter.RecordError()
+		writeHTTPJSON(w, http.StatusNotImplemented, map[string]interface{}{
+			"routed": "legacy",
+			"error":  "legacy forwarding is not implemented; the job was not accepted",
+			"size":   len(body),
 		})
 	}
 }
@@ -171,7 +208,7 @@ func (p *MigrationProxy) HandleSetPercentage(w http.ResponseWriter, r *http.Requ
 	var req struct {
 		Percentage int `json:"percentage"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 		writeHTTPJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -212,7 +249,11 @@ func (p *MigrationProxy) HandleRollback(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		Reason string `json:"reason"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req)
+	if err != nil && !errors.Is(err, io.EOF) {
+		writeHTTPJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	if req.Reason == "" {
 		req.Reason = "manual rollback"
 	}
@@ -235,5 +276,7 @@ func (p *MigrationProxy) HandleHealth(w http.ResponseWriter, r *http.Request) {
 func writeHTTPJSON(w http.ResponseWriter, code int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(data)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		return
+	}
 }

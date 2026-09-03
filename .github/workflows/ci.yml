@@ -12,24 +12,58 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ['1.22', '1.23', '1.24']
+    env:
+      GOWORK: "off"
+      GOFLAGS: "-mod=readonly"
+      GOPROXY: file://${{ github.workspace }}/.release-proxy/backend-common,https://proxy.golang.org,direct
+      GONOSUMDB: github.com/openjobspec/ojs-go-backend-common
+      OJS_BACKEND_COMMON_PRE_RELEASE_SHA: 1c14ab26ffa9923825d8ccecc99c72f07c66c9a7
+      FOUNDATION_READ_TOKEN: ${{ secrets.FOUNDATION_READ_TOKEN }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
+      - name: Require immutable pre-release dependency
+        run: |
+          if ! printf '%s' "$OJS_BACKEND_COMMON_PRE_RELEASE_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Set OJS_BACKEND_COMMON_PRE_RELEASE_SHA to the immutable backend-common 0.5.0 foundation commit"
+            exit 1
+          fi
+          if [ -z "$FOUNDATION_READ_TOKEN" ]; then
+            echo "::error::FOUNDATION_READ_TOKEN is required to check out pre-release foundation repositories"
+            exit 1
+          fi
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          repository: openjobspec/ojs-go-backend-common
+          ref: ${{ env.OJS_BACKEND_COMMON_PRE_RELEASE_SHA }}
+          token: ${{ env.FOUNDATION_READ_TOKEN }}
+          path: .release-deps/ojs-go-backend-common
+
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: "1.24.x"
+          cache-dependency-path: go.sum
 
-      - name: Vet
-        run: go vet ./...
+      - name: Build clean pre-release backend proxy
+        run: |
+          python3 .release-deps/ojs-go-backend-common/scripts/build-local-proxy.py \
+            --module-root .release-deps/ojs-go-backend-common \
+            .release-proxy/backend-common v0.5.0
+
+      - name: Verify module is tidy
+        run: make tidy-check
+
+      - name: Build
+        run: make build
 
       - name: Test
-        run: go test ./... -race -coverprofile=coverage.out
+        run: GOWORK=off go test ./... -race -coverprofile=coverage.out
+
+      - name: Vet
+        run: make lint
 
       - name: Coverage
-        if: matrix.go-version == '1.24'
         run: |
           go tool cover -func=coverage.out
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
@@ -40,13 +74,11 @@ jobs:
           fi
 
       - name: golangci-lint
-        if: matrix.go-version == '1.24'
         uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84 # v6
         with:
           version: v1.64.8
 
       - name: Govulncheck
-        if: matrix.go-version == '1.24'
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
           govulncheck ./...

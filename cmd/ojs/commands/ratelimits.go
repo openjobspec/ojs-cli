@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 
@@ -11,12 +10,14 @@ import (
 
 // RateLimits manages rate limit inspection and overrides.
 func RateLimits(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("rate-limits", flag.ExitOnError)
+	fs := flag.NewFlagSet("rate-limits", flag.ContinueOnError)
 	inspect := fs.String("inspect", "", "Inspect rate limit by key")
 	override := fs.String("override", "", "Override rate limit by key")
 	concurrency := fs.Int("concurrency", 0, "Concurrency limit (for override)")
 	clear := fs.Bool("clear", false, "Clear rate limit override")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
 	if *override != "" {
 		if *clear {
@@ -40,9 +41,7 @@ func RateLimits(c *client.Client, args []string) error {
 			return err
 		}
 		if output.Format == "json" {
-			var result any
-			json.Unmarshal(data, &result)
-			return output.JSON(result)
+			return printJSONResponse(data)
 		}
 		output.Success("Rate limit override set for %q (concurrency=%d)", *override, *concurrency)
 		return nil
@@ -54,12 +53,12 @@ func RateLimits(c *client.Client, args []string) error {
 			return err
 		}
 		if output.Format == "json" {
-			var result any
-			json.Unmarshal(data, &result)
-			return output.JSON(result)
+			return printJSONResponse(data)
 		}
 		var rl map[string]any
-		json.Unmarshal(data, &rl)
+		if err := decodeResponse(data, &rl); err != nil {
+			return err
+		}
 		headers := []string{"FIELD", "VALUE"}
 		rows := [][]string{
 			{"Key", str(rl["key"])},
@@ -84,9 +83,7 @@ func listRateLimits(c *client.Client) error {
 	}
 
 	if output.Format == "json" {
-		var result any
-		json.Unmarshal(data, &result)
-		return output.JSON(result)
+		return printJSONResponse(data)
 	}
 
 	var resp struct {
@@ -97,7 +94,9 @@ func listRateLimits(c *client.Client) error {
 			Available   int    `json:"available"`
 		} `json:"rate_limits"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := decodeResponse(data, &resp); err != nil {
+		return err
+	}
 
 	if len(resp.RateLimits) == 0 {
 		fmt.Println("No rate limits configured.")

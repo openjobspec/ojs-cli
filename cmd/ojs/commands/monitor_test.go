@@ -1,14 +1,46 @@
 package commands
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/openjobspec/ojs-cli/internal/client"
 	"github.com/openjobspec/ojs-cli/internal/config"
 )
+
+func TestMonitorRejectsNonPositiveInterval(t *testing.T) {
+	if err := Monitor(nil, []string{"--interval=0"}); err == nil {
+		t.Fatal("Monitor() error = nil, want invalid interval error")
+	}
+	if err := Monitor(nil, []string{"--interval=-1s"}); err == nil {
+		t.Fatal("Monitor() error = nil, want negative interval error")
+	}
+}
+
+func TestRenderDashboardDoesNotClearNonTTY(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ojs/v1/health", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+	})
+	mux.HandleFunc("/ojs/v1/queues", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"queues": []any{}})
+	})
+	mux.HandleFunc("/ojs/v1/dead-letter", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"total": 0})
+	})
+
+	var output bytes.Buffer
+	if err := renderDashboardTo(newMonitorTestClient(mux), &output, false); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "\033[2J") {
+		t.Fatalf("non-TTY output contains clear-screen escape: %q", output.String())
+	}
+}
 
 func newMonitorTestClient(handler http.Handler) *client.Client {
 	server := httptest.NewServer(handler)

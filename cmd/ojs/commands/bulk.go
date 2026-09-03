@@ -28,24 +28,17 @@ func Bulk(c *client.Client, args []string) error {
 }
 
 func bulkCancel(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("bulk cancel", flag.ExitOnError)
+	fs := flag.NewFlagSet("bulk cancel", flag.ContinueOnError)
 	ids := fs.String("ids", "", "Comma-separated job IDs (required)")
 	state := fs.String("state", "", "Cancel all jobs in this state")
 	queue := fs.String("queue", "", "Filter by queue (used with --state)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
-	body := map[string]any{}
-
-	if *ids != "" {
-		body["job_ids"] = splitIDs(*ids)
-	} else if *state != "" {
-		filter := map[string]any{"state": *state}
-		if *queue != "" {
-			filter["queue"] = *queue
-		}
-		body["filter"] = filter
-	} else {
-		return fmt.Errorf("--ids or --state is required\n\nUsage: ojs bulk cancel --ids <id1,id2,...>\n       ojs bulk cancel --state <state> [--queue <queue>]")
+	body, err := buildBulkBody(*ids, *state, *queue, "")
+	if err != nil {
+		return fmt.Errorf("%w\n\nUsage: ojs bulk cancel --ids <id1,id2,...>\n       ojs bulk cancel --state <state> [--queue <queue>]", err)
 	}
 
 	data, _, err := c.Post("/jobs/bulk/cancel", body)
@@ -55,7 +48,9 @@ func bulkCancel(c *client.Client, args []string) error {
 
 	if output.Format == "json" {
 		var result any
-		json.Unmarshal(data, &result)
+		if err := json.Unmarshal(data, &result); err != nil {
+			return fmt.Errorf("parse response: %w", err)
+		}
 		return output.JSON(result)
 	}
 
@@ -63,30 +58,25 @@ func bulkCancel(c *client.Client, args []string) error {
 		Cancelled int `json:"cancelled"`
 		Failed    int `json:"failed"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return fmt.Errorf("parse response: %w", err)
+	}
 	output.Success("Bulk cancel: %d cancelled, %d failed", resp.Cancelled, resp.Failed)
 	return nil
 }
 
 func bulkRetry(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("bulk retry", flag.ExitOnError)
+	fs := flag.NewFlagSet("bulk retry", flag.ContinueOnError)
 	ids := fs.String("ids", "", "Comma-separated job IDs (required)")
 	state := fs.String("state", "", "Retry all jobs in this state")
 	queue := fs.String("queue", "", "Filter by queue (used with --state)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
-	body := map[string]any{}
-
-	if *ids != "" {
-		body["job_ids"] = splitIDs(*ids)
-	} else if *state != "" {
-		filter := map[string]any{"state": *state}
-		if *queue != "" {
-			filter["queue"] = *queue
-		}
-		body["filter"] = filter
-	} else {
-		return fmt.Errorf("--ids or --state is required\n\nUsage: ojs bulk retry --ids <id1,id2,...>\n       ojs bulk retry --state <state> [--queue <queue>]")
+	body, err := buildBulkBody(*ids, *state, *queue, "")
+	if err != nil {
+		return fmt.Errorf("%w\n\nUsage: ojs bulk retry --ids <id1,id2,...>\n       ojs bulk retry --state <state> [--queue <queue>]", err)
 	}
 
 	data, _, err := c.Post("/jobs/bulk/retry", body)
@@ -96,7 +86,9 @@ func bulkRetry(c *client.Client, args []string) error {
 
 	if output.Format == "json" {
 		var result any
-		json.Unmarshal(data, &result)
+		if err := json.Unmarshal(data, &result); err != nil {
+			return fmt.Errorf("parse response: %w", err)
+		}
 		return output.JSON(result)
 	}
 
@@ -104,7 +96,9 @@ func bulkRetry(c *client.Client, args []string) error {
 		Retried int `json:"retried"`
 		Failed  int `json:"failed"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return fmt.Errorf("parse response: %w", err)
+	}
 	output.Success("Bulk retry: %d retried, %d failed", resp.Retried, resp.Failed)
 	return nil
 }
@@ -143,28 +137,18 @@ func printBulkUsage() error {
 }
 
 func bulkDelete(c *client.Client, args []string) error {
-	fs := flag.NewFlagSet("bulk delete", flag.ExitOnError)
+	fs := flag.NewFlagSet("bulk delete", flag.ContinueOnError)
 	ids := fs.String("ids", "", "Comma-separated job IDs")
 	state := fs.String("state", "", "Delete all jobs in this terminal state (completed, discarded, cancelled)")
 	queue := fs.String("queue", "", "Filter by queue (used with --state)")
 	olderThan := fs.String("older-than", "", "Delete jobs older than duration (e.g. 7d, 24h)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
 
-	body := map[string]any{}
-
-	if *ids != "" {
-		body["job_ids"] = splitIDs(*ids)
-	} else if *state != "" {
-		filter := map[string]any{"state": *state}
-		if *queue != "" {
-			filter["queue"] = *queue
-		}
-		if *olderThan != "" {
-			filter["older_than"] = *olderThan
-		}
-		body["filter"] = filter
-	} else {
-		return fmt.Errorf("--ids or --state is required\n\nUsage: ojs bulk delete --ids <id1,id2,...>\n       ojs bulk delete --state <state> [--queue <queue>] [--older-than <duration>]")
+	body, err := buildBulkBody(*ids, *state, *queue, *olderThan)
+	if err != nil {
+		return fmt.Errorf("%w\n\nUsage: ojs bulk delete --ids <id1,id2,...>\n       ojs bulk delete --state <state> [--queue <queue>] [--older-than <duration>]", err)
 	}
 
 	data, _, err := c.Post("/jobs/bulk/delete", body)
@@ -174,7 +158,9 @@ func bulkDelete(c *client.Client, args []string) error {
 
 	if output.Format == "json" {
 		var result any
-		json.Unmarshal(data, &result)
+		if err := json.Unmarshal(data, &result); err != nil {
+			return fmt.Errorf("parse response: %w", err)
+		}
 		return output.JSON(result)
 	}
 
@@ -182,7 +168,29 @@ func bulkDelete(c *client.Client, args []string) error {
 		Deleted int `json:"deleted"`
 		Failed  int `json:"failed"`
 	}
-	json.Unmarshal(data, &resp)
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return fmt.Errorf("parse response: %w", err)
+	}
 	output.Success("Bulk delete: %d deleted, %d failed", resp.Deleted, resp.Failed)
 	return nil
+}
+
+func buildBulkBody(ids, state, queue, olderThan string) (map[string]any, error) {
+	body := make(map[string]any)
+	switch {
+	case ids != "":
+		body["job_ids"] = splitIDs(ids)
+	case state != "":
+		filter := map[string]any{"state": state}
+		if queue != "" {
+			filter["queue"] = queue
+		}
+		if olderThan != "" {
+			filter["older_than"] = olderThan
+		}
+		body["filter"] = filter
+	default:
+		return nil, fmt.Errorf("--ids or --state is required")
+	}
+	return body, nil
 }
